@@ -57,7 +57,7 @@ run ID and URL, a workflow name, a branch, a trigger. That is log-shaped data,
 not a numeric time-series. Modelling it as a Prometheus metric forces a bad
 trade-off:
 
-- a bare counter (`failed_runs_total 7`) tells you *how many* but nothing you
+- a bare counter (`failed_runs_total 7`) tells you _how many_ but nothing you
   can click — it loses the entire actionable payload; or
 - an info-metric with the run URL/title as labels reintroduces the detail but
   abuses Prometheus with unbounded label cardinality and sticky stale series.
@@ -236,7 +236,7 @@ the container unhealthy.
   [CONTRIBUTING.md](CONTRIBUTING.md)).
 - **github.com only.** GitHub Enterprise Server would require making the API
   base URL configurable.
-- **Re-emission on restart** (see *Event-once semantics* above).
+- **Re-emission on restart** (see _Event-once semantics_ above).
 
 ## Development
 

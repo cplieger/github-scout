@@ -71,18 +71,18 @@ func TestPollIntervalZeroIsOneShot(t *testing.T) {
 
 func TestClampingAndFallbacks(t *testing.T) {
 	tests := []struct {
+		selector func(Config) time.Duration
 		name     string
 		key      string
 		val      string
 		want     time.Duration
-		selector func(Config) time.Duration
 	}{
-		{"poll negative falls back to default", "POLL_INTERVAL_MINUTES", "-5", DefaultPollMinutes * time.Minute, func(c Config) time.Duration { return c.PollInterval }},
-		{"poll garbage falls back to default", "POLL_INTERVAL_MINUTES", "abc", DefaultPollMinutes * time.Minute, func(c Config) time.Duration { return c.PollInterval }},
-		{"poll over max is clamped", "POLL_INTERVAL_MINUTES", "999999999", maxPollMinutes * time.Minute, func(c Config) time.Duration { return c.PollInterval }},
-		{"lookback zero floors to lo=1", "LOOKBACK_HOURS", "0", 1 * time.Hour, func(c Config) time.Duration { return c.Lookback }},
-		{"lookback negative falls back to default", "LOOKBACK_HOURS", "-1", DefaultLookbackHours * time.Hour, func(c Config) time.Duration { return c.Lookback }},
-		{"lookback over max is clamped", "LOOKBACK_HOURS", "100000", maxLookbackHours * time.Hour, func(c Config) time.Duration { return c.Lookback }},
+		{name: "poll negative falls back to default", key: "POLL_INTERVAL_MINUTES", val: "-5", want: DefaultPollMinutes * time.Minute, selector: func(c Config) time.Duration { return c.PollInterval }},
+		{name: "poll garbage falls back to default", key: "POLL_INTERVAL_MINUTES", val: "abc", want: DefaultPollMinutes * time.Minute, selector: func(c Config) time.Duration { return c.PollInterval }},
+		{name: "poll over max is clamped", key: "POLL_INTERVAL_MINUTES", val: "999999999", want: maxPollMinutes * time.Minute, selector: func(c Config) time.Duration { return c.PollInterval }},
+		{name: "lookback zero floors to lo=1", key: "LOOKBACK_HOURS", val: "0", want: 1 * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
+		{name: "lookback negative falls back to default", key: "LOOKBACK_HOURS", val: "-1", want: DefaultLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
+		{name: "lookback over max is clamped", key: "LOOKBACK_HOURS", val: "100000", want: maxLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

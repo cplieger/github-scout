@@ -12,10 +12,10 @@ import (
 
 // fakeClient is a scripted apiClient for driving the collector without HTTP.
 type fakeClient struct {
-	repos    []model.Repo
-	reposErr error
+	reposErr error                        // scripted ListRepos error
 	runs     map[string][]model.FailedRun // keyed by repo full name
-	runsErr  map[string]error
+	runsErr  map[string]error             // keyed by repo full name
+	repos    []model.Repo
 	calls    int // ListFailedRuns call count
 }
 
