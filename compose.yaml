@@ -14,5 +14,9 @@ services:
       EXCLUDE_REPOS: ""  # comma-separated bare repo names to skip
       LOG_LEVEL: "info"
 
+    # Writable home for the only file github-scout writes: the
+    # /tmp/.healthy marker the `health` subcommand checks. The app is
+    # otherwise stateless (dedup set in memory, history in Loki), so no
+    # volumes. 1 MB is ample; noexec/nosuid/nodev harden it.
     tmpfs:
       - "/tmp:size=1m,mode=1777,noexec,nosuid,nodev"
