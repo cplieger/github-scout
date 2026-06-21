@@ -1,0 +1,295 @@
+{
+  "title": "GitHub Scout",
+  "uid": "github-scout",
+  "description": "Cross-repo GitHub Actions failures surfaced by github-scout. Each row is an actionable failed run with a link to investigate. No stats for stats sake — only things that need a look.",
+  "tags": ["github", "ci", "actions", "failures"],
+  "timezone": "browser",
+  "refresh": "5m",
+  "schemaVersion": 42,
+  "version": 1,
+  "time": { "from": "now-7d", "to": "now" },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "type": "datasource",
+        "query": "loki",
+        "current": { "text": "Loki", "value": "loki" },
+        "hide": 0
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Failed Actions",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "id": 10,
+      "title": "Failed Runs",
+      "description": "Distinct failed workflow runs in the selected range (deduplicated by run ID)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 1 },
+            { "color": "red", "value": 10 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "count(sum by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range])))",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Repos Affected",
+      "description": "Distinct repositories with at least one failure in range",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "orange", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "count(sum by (repo) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range])))",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Scout Status",
+      "description": "Whether github-scout completed a scan in the last hour. STALLED means the poller is wedged or down — investigate the container.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "STALLED",
+          "mappings": [
+            { "type": "range", "options": { "from": 1, "to": 1000000, "result": { "text": "RUNNING", "color": "green", "index": 0 } } },
+            { "type": "special", "options": { "match": "null", "result": { "text": "STALLED", "color": "red", "index": 1 } } }
+          ],
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "red", "value": null },
+            { "color": "green", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum(count_over_time({container=\"github-scout\"} | json | msg=`scan complete` [1h]))",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Scan Errors",
+      "description": "github-scout's own failures (repo discovery failed — bad token, rate limit, owner typo) in range. Non-zero means the scout itself is broken, not a watched repo.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "red", "value": 1 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum(count_over_time({container=\"github-scout\"} |~ `(?i)(\"level\":\"error|repo discovery failed)` [$__range]))",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 20,
+      "title": "Failed Runs \u2014 click a row's link to investigate",
+      "description": "Every failed/timed-out/startup-failed Actions run across all scanned repos. Sorted newest first. The Link column opens the run on GitHub.",
+      "type": "table",
+      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 5 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "custom": { "filterable": true } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Conclusion" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "mappings", "value": [ { "type": "value", "options": {
+                "failure": { "color": "red", "index": 0 },
+                "timed_out": { "color": "orange", "index": 1 },
+                "startup_failure": { "color": "dark-red", "index": 2 }
+              } } ] }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Link" },
+            "properties": [ { "id": "links", "value": [ { "title": "Open run on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Time", "desc": true } ] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "{container=\"github-scout\"} | json | msg=`workflow run failed`",
+          "queryType": "range",
+          "maxLines": 500
+        }
+      ],
+      "transformations": [
+        {
+          "id": "extractFields",
+          "options": { "source": "Line", "format": "json", "keepTime": false }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Line": true, "labels": true, "id": true, "tsNs": true,
+              "Time": false, "msg": true, "level": true, "time": true,
+              "container": true, "hostname": true, "service_name": true,
+              "job": true, "detected_level": true, "run_id": true,
+              "source": true, "filename": true
+            },
+            "indexByName": {
+              "Time": 0, "repo": 1, "workflow": 2, "conclusion": 3,
+              "branch": 4, "event": 5, "run_number": 6, "url": 7
+            },
+            "renameByName": {
+              "repo": "Repo", "workflow": "Workflow", "conclusion": "Conclusion",
+              "branch": "Branch", "event": "Trigger", "run_number": "#", "url": "Link"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "title": "Failures Over Time",
+      "description": "Failed runs per time bucket, stacked by repo \u2014 spot a repo that suddenly starts failing",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "drawStyle": "bars", "fillOpacity": 80, "stacking": { "mode": "normal" } },
+          "unit": "short", "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"], "sortBy": "Total", "sortDesc": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (repo) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__auto]))",
+          "queryType": "range",
+          "legendFormat": "{{repo}}"
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "title": "Failures by Repo",
+      "description": "Total failures per repo in range \u2014 which repo needs the most attention",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short", "min": 0,
+          "color": { "mode": "continuous-GrYlRd" }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "sum by (repo) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range]))",
+          "queryType": "instant",
+          "legendFormat": "{{repo}}"
+        }
+      ]
+    }
+  ]
+}
