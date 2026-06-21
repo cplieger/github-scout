@@ -1,8 +1,8 @@
 {
   "title": "GitHub Scout",
   "uid": "github-scout",
-  "description": "Cross-repo GitHub Actions failures surfaced by github-scout. Each row is an actionable failed run with a link to investigate. No stats for stats sake — only things that need a look.",
-  "tags": ["github", "ci", "actions", "failures"],
+  "description": "Cross-repo GitHub work surfaced by github-scout: open pull requests, open issues, code-scanning alerts (current state), and failed Actions runs (recent events). Every row links straight to GitHub. No stats for stats sake — only things that need a look.",
+  "tags": ["github", "ci", "actions", "pull-requests", "issues", "security"],
   "timezone": "browser",
   "refresh": "5m",
   "schemaVersion": 42,
@@ -15,24 +15,140 @@
         "type": "datasource",
         "query": "loki",
         "current": { "text": "Loki", "value": "loki" },
-        "hide": 0
+        "hide": 2
+      },
+      {
+        "name": "window",
+        "type": "textbox",
+        "label": "Snapshot window",
+        "description": "How far back to read the latest snapshot of open PRs / issues / alerts. Must be >= POLL_INTERVAL_MINUTES (github-scout default 15m): every open item is re-emitted each scan, and this window captures the most recent one. The time picker only affects the failed-runs panels.",
+        "query": "20m",
+        "current": { "selected": true, "text": "20m", "value": "20m" },
+        "options": [ { "selected": true, "text": "20m", "value": "20m" } ],
+        "hide": 2,
+        "skipUrlSync": false
       }
     ]
   },
   "panels": [
     {
       "id": 1,
-      "title": "Failed Actions",
+      "title": "At a glance",
       "type": "row",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "collapsed": false
     },
     {
       "id": 10,
-      "title": "Failed Runs",
-      "description": "Distinct failed workflow runs in the selected range (deduplicated by run ID)",
+      "title": "Open PRs",
+      "description": "Pull requests open across all repos right now (most recent scan). Renovate PRs are excluded by github-scout. Click into the table below to review.",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 5 },
+            { "color": "red", "value": 15 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "count(count by (repo, number) (count_over_time({container=\"github-scout\"} | json | msg=`open pull request` [$window])))",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Open Issues",
+      "description": "Issues open across all repos right now (most recent scan). Renovate and auto-generated trackers are excluded by github-scout.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 5 },
+            { "color": "red", "value": 20 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "count(count by (repo, number) (count_over_time({container=\"github-scout\"} | json | msg=`open issue` [$window])))",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "title": "Code Scanning Alerts",
+      "description": "Open CodeQL / code-scanning alerts across all repos right now. Any open alert is worth a look; details and severity in the table below.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "0",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 1 },
+            { "color": "red", "value": 5 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "count(count by (repo, number) (count_over_time({container=\"github-scout\"} | json | msg=`code scanning alert` [$window])))",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Failed Runs (range)",
+      "description": "Distinct failed / timed-out / startup-failed Actions runs in the selected time range, deduplicated by run ID. Unlike the other tiles, this one follows the time picker.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
@@ -57,51 +173,234 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "count(sum by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range])))",
+          "expr": "count(count by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range])))",
           "queryType": "instant"
         }
       ]
     },
     {
-      "id": 11,
-      "title": "Repos Affected",
-      "description": "Distinct repositories with at least one failure in range",
-      "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
+      "id": 2,
+      "title": "Open work \u2014 current state (most recent scan)",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "collapsed": false
+    },
+    {
+      "id": 20,
+      "title": "Open Pull Requests \u2014 click Link to review",
+      "description": "Every open PR across all repos as of the most recent scan (last $window). Renovate PRs are excluded by github-scout. Use the column filters to narrow by repo or author; sorted newest first.",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 6 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
       "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "noValue": "0",
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "orange", "value": 1 }
-          ]}
-        },
-        "overrides": []
+        "defaults": { "custom": { "filterable": true } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Draft" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "mappings", "value": [ { "type": "value", "options": {
+                "true": { "text": "draft", "color": "yellow", "index": 0 },
+                "false": { "text": "ready", "color": "green", "index": 1 }
+              } } ] }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Link" },
+            "properties": [ { "id": "links", "value": [ { "title": "Open PR on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
+          }
+        ]
       },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "background",
-        "graphMode": "none",
-        "textMode": "value"
-      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Created", "desc": true } ] },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "count(sum by (repo) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range])))",
+          "expr": "count by (repo, number, title, author, draft, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`open pull request` [$window]))",
           "queryType": "instant"
+        }
+      ],
+      "transformations": [
+        { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "created_at", "destinationType": "time" } ] } },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true },
+            "indexByName": { "created_at": 0, "repo": 1, "number": 2, "title": 3, "author": 4, "draft": 5, "url": 6 },
+            "renameByName": {
+              "created_at": "Created", "repo": "Repo", "number": "#", "title": "Title",
+              "author": "Author", "draft": "Draft", "url": "Link"
+            }
+          }
         }
       ]
     },
     {
-      "id": 12,
+      "id": 21,
+      "title": "Open Issues \u2014 click Link to triage",
+      "description": "Every open issue across all repos as of the most recent scan (last $window). Renovate and auto-generated (gremlins) trackers are excluded by github-scout. Sorted newest first.",
+      "type": "table",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 15 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "custom": { "filterable": true } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Link" },
+            "properties": [ { "id": "links", "value": [ { "title": "Open issue on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Created", "desc": true } ] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "count by (repo, number, title, author, labels, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`open issue` [$window]))",
+          "queryType": "instant"
+        }
+      ],
+      "transformations": [
+        { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "created_at", "destinationType": "time" } ] } },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true },
+            "indexByName": { "created_at": 0, "repo": 1, "number": 2, "title": 3, "author": 4, "labels": 5, "url": 6 },
+            "renameByName": {
+              "created_at": "Created", "repo": "Repo", "number": "#", "title": "Title",
+              "author": "Author", "labels": "Labels", "url": "Link"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 22,
+      "title": "Code Scanning Alerts \u2014 click Link to investigate",
+      "description": "Open CodeQL / code-scanning alerts across all repos as of the most recent scan (last $window). Severity is GitHub's security severity; repos without code scanning are silently skipped.",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "custom": { "filterable": true } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Severity" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "mappings", "value": [ { "type": "value", "options": {
+                "critical": { "color": "dark-red", "index": 0 },
+                "high": { "color": "red", "index": 1 },
+                "medium": { "color": "orange", "index": 2 },
+                "low": { "color": "yellow", "index": 3 }
+              } } ] }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Link" },
+            "properties": [ { "id": "links", "value": [ { "title": "Open alert on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Created", "desc": true } ] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "count by (repo, number, rule, severity, tool, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`code scanning alert` [$window]))",
+          "queryType": "instant"
+        }
+      ],
+      "transformations": [
+        { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "created_at", "destinationType": "time" } ] } },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true },
+            "indexByName": { "created_at": 0, "repo": 1, "number": 2, "rule": 3, "severity": 4, "tool": 5, "url": 6 },
+            "renameByName": {
+              "created_at": "Created", "repo": "Repo", "number": "#", "rule": "Rule",
+              "severity": "Severity", "tool": "Tool", "url": "Link"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "Failed Actions runs \u2014 selected time range",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "collapsed": false
+    },
+    {
+      "id": 30,
+      "title": "Failed Runs \u2014 click Link to investigate",
+      "description": "Every failed / timed-out / startup-failed Actions run across all repos in the selected time range (deduplicated by run ID, newest first). github-scout looks back LOOKBACK_HOURS (default 72h), so set the picker accordingly.",
+      "type": "table",
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 33 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": { "custom": { "filterable": true } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Conclusion" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
+              { "id": "mappings", "value": [ { "type": "value", "options": {
+                "failure": { "color": "red", "index": 0 },
+                "timed_out": { "color": "orange", "index": 1 },
+                "startup_failure": { "color": "dark-red", "index": 2 }
+              } } ] }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Link" },
+            "properties": [ { "id": "links", "value": [ { "title": "Open run on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Created", "desc": true } ] },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "count by (repo, workflow, conclusion, branch, event, run_number, run_id, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range]))",
+          "queryType": "instant"
+        }
+      ],
+      "transformations": [
+        { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "created_at", "destinationType": "time" } ] } },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Value": true, "run_id": true },
+            "indexByName": {
+              "created_at": 0, "repo": 1, "workflow": 2, "conclusion": 3,
+              "branch": 4, "event": 5, "run_number": 6, "url": 7
+            },
+            "renameByName": {
+              "created_at": "Created", "repo": "Repo", "workflow": "Workflow", "conclusion": "Conclusion",
+              "branch": "Branch", "event": "Trigger", "run_number": "#", "url": "Link"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Scout health",
+      "type": "row",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 },
+      "collapsed": false
+    },
+    {
+      "id": 40,
       "title": "Scout Status",
-      "description": "Whether github-scout completed a scan in the last hour. STALLED means the poller is wedged or down — investigate the container.",
+      "description": "Whether github-scout completed a scan in the last hour. STALLED means the poller is wedged or the container is down \u2014 investigate it, because every panel above goes stale and silently reads empty.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 44 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
@@ -135,11 +434,11 @@
       ]
     },
     {
-      "id": 13,
-      "title": "Scan Errors",
-      "description": "github-scout's own failures (repo discovery failed — bad token, rate limit, owner typo) in range. Non-zero means the scout itself is broken, not a watched repo.",
+      "id": 41,
+      "title": "Scan Errors (last 1h)",
+      "description": "github-scout's own failures (repo discovery failed \u2014 bad token, rate limit, owner typo) in the last hour. Non-zero means the scout itself is broken, not a watched repo. Tolerated per-repo warnings are not counted.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 44 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
@@ -163,131 +462,38 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "sum(count_over_time({container=\"github-scout\"} |~ `(?i)(\"level\":\"error|repo discovery failed)` [$__range]))",
+          "expr": "sum(count_over_time({container=\"github-scout\"} |~ `(?i)(\"level\":\"error|repo discovery failed)` [1h]))",
           "queryType": "instant"
         }
       ]
     },
     {
-      "id": 20,
-      "title": "Failed Runs \u2014 click a row's link to investigate",
-      "description": "Every failed/timed-out/startup-failed Actions run across all scanned repos. Sorted newest first. The Link column opens the run on GitHub.",
-      "type": "table",
-      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 5 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": { "custom": { "filterable": true } },
-        "overrides": [
-          {
-            "matcher": { "id": "byName", "options": "Conclusion" },
-            "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-              { "id": "mappings", "value": [ { "type": "value", "options": {
-                "failure": { "color": "red", "index": 0 },
-                "timed_out": { "color": "orange", "index": 1 },
-                "startup_failure": { "color": "dark-red", "index": 2 }
-              } } ] }
-            ]
-          },
-          {
-            "matcher": { "id": "byName", "options": "Link" },
-            "properties": [ { "id": "links", "value": [ { "title": "Open run on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
-          }
-        ]
-      },
-      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Time", "desc": true } ] },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "{container=\"github-scout\"} | json | msg=`workflow run failed`",
-          "queryType": "range",
-          "maxLines": 500
-        }
-      ],
-      "transformations": [
-        {
-          "id": "extractFields",
-          "options": { "source": "Line", "format": "json", "keepTime": false }
-        },
-        {
-          "id": "organize",
-          "options": {
-            "excludeByName": {
-              "Line": true, "labels": true, "id": true, "tsNs": true,
-              "Time": false, "msg": true, "level": true, "time": true,
-              "container": true, "hostname": true, "service_name": true,
-              "job": true, "detected_level": true, "run_id": true,
-              "source": true, "filename": true
-            },
-            "indexByName": {
-              "Time": 0, "repo": 1, "workflow": 2, "conclusion": 3,
-              "branch": 4, "event": 5, "run_number": 6, "url": 7
-            },
-            "renameByName": {
-              "repo": "Repo", "workflow": "Workflow", "conclusion": "Conclusion",
-              "branch": "Branch", "event": "Trigger", "run_number": "#", "url": "Link"
-            }
-          }
-        }
-      ]
-    },
-    {
-      "id": 21,
-      "title": "Failures Over Time",
-      "description": "Failed runs per time bucket, stacked by repo \u2014 spot a repo that suddenly starts failing",
-      "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 19 },
+      "id": 42,
+      "title": "Repos Scanned (last scan)",
+      "description": "How many repos the most recent scan covered. A sudden drop toward zero means discovery is partially failing even if the scout still reports RUNNING.",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 44 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "drawStyle": "bars", "fillOpacity": 80, "stacking": { "mode": "normal" } },
-          "unit": "short", "min": 0
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum"], "sortBy": "Total", "sortDesc": true },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "sum by (repo) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__auto]))",
-          "queryType": "range",
-          "legendFormat": "{{repo}}"
-        }
-      ]
-    },
-    {
-      "id": 22,
-      "title": "Failures by Repo",
-      "description": "Total failures per repo in range \u2014 which repo needs the most attention",
-      "type": "bargauge",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 19 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short", "min": 0,
-          "color": { "mode": "continuous-GrYlRd" }
+          "unit": "short",
+          "noValue": "\u2014",
+          "color": { "mode": "fixed", "fixedColor": "text" }
         },
         "overrides": []
       },
       "options": {
         "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "horizontal",
-        "displayMode": "gradient",
-        "showUnfilled": true
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "value"
       },
       "targets": [
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "sum by (repo) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range]))",
-          "queryType": "instant",
-          "legendFormat": "{{repo}}"
+          "expr": "last_over_time({container=\"github-scout\"} | json | msg=`scan complete` | unwrap scanned [1h])",
+          "queryType": "instant"
         }
       ]
     }

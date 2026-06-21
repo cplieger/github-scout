@@ -12,21 +12,22 @@ load-bearing patterns.
 
 ## What github-scout is (and isn't)
 
-It does one thing: scan a GitHub owner's repositories and emit each newly-failed
-Actions run as a structured log line for Loki. It is deliberately **not** a
-general GitHub metrics exporter — pull requests, issues, code-scanning, and
-Dependabot are out of scope for v1 because the Grafana GitHub datasource already
-covers them. Keep that focus in mind when proposing changes; "surface an
-actionable event" fits, "expose another number on a dashboard" usually doesn't.
+It does one thing: scan a GitHub owner's repositories and surface the items that
+need a look — open pull requests, open issues, code-scanning alerts, and failed
+Actions runs — as structured log lines for Loki. It is deliberately **not** a
+general GitHub metrics exporter: Dependabot is out of scope (it has its own
+alerting), and anything that is just "another number on a dashboard" doesn't
+fit. Keep that focus in mind when proposing changes; "surface an actionable
+item" fits, "expose a trend line" usually doesn't.
 
-The design rationale (logs over metrics, event-once dedup, stateless) lives in
-the [README](README.md#design). Changes that contradict those decisions need a
-strong justification.
+The design rationale (logs over metrics, the event-once vs snapshot emission
+models, stateless) lives in the [README](README.md#design). Changes that
+contradict those decisions need a strong justification.
 
 ## Architecture
 
 `github-scout` is a single Go binary that polls the GitHub REST API on a
-schedule and emits failed-run events as JSON to stdout. It is stateless — no
+schedule and emits four actionable signals as JSON to stdout. It is stateless — no
 database, no on-disk state beyond the health marker; history lives in Loki.
 There is no HTTP server and no listening port.
 
@@ -37,16 +38,20 @@ lives under `internal/`:
 
 - `internal/config` — env-var loading, clamping, and validation (`Load`).
 - `internal/github` — the GitHub REST client: `ListRepos` (via
-  `/user/repos?affiliation=owner`, so private repos are included) and
-  `ListFailedRuns` (one paginated query per failure conclusion). Auth headers,
-  body caps, and page-count pagination live here.
-- `internal/collect` — the scan orchestrator: discover repos → list failed runs
-  → dedup by run ID → emit. It depends on a small consumer-side `apiClient`
-  **interface** (not the concrete client), which is the seam that lets the
-  orchestration logic be unit-tested with a scripted fake while the HTTP client
-  is tested separately against an `httptest` server.
-- `internal/model` — domain types (`Repo`, `FailedRun`). Their JSON tags are the
-  Loki field names the dashboard queries, so treat them as a contract.
+  `/user/repos?affiliation=owner`, so private repos are included),
+  `ListFailedRuns` (one paginated query per failure conclusion),
+  `SearchOpenPRs` / `SearchOpenIssues` (one cross-repo `/search/issues` query
+  each), and `ListCodeScanningAlerts` (per-repo, tolerating the 403/404 a repo
+  without code scanning returns). Auth headers, body caps, and page-count
+  pagination live here.
+- `internal/collect` — the scan orchestrator: discover repos → collect the four
+  signals → emit. It depends on a small consumer-side `apiClient` **interface**
+  (not the concrete client), which is the seam that lets the orchestration logic
+  be unit-tested with a scripted fake while the HTTP client is tested separately
+  against an `httptest` server.
+- `internal/model` — domain types (`Repo`, `FailedRun`, `PullRequest`, `Issue`,
+  `CodeScanningAlert`). Their JSON tags are the Loki field names the dashboard
+  queries, so treat them as a contract — renaming a tag breaks dashboard panels.
 - `internal/urlsafe` — URL path-segment validation, applied to every owner/repo
   name before it is interpolated into a request URL.
 
@@ -88,9 +93,11 @@ LOG_LEVEL=debug \
 go run .
 ```
 
-A read-only fine-grained token (Contents: read + Actions: read) is enough. You
-will see the structured JSON events on stdout exactly as Loki would receive
-them. The full env-var reference is in the README's configuration table.
+A read-only fine-grained token works well: Repository access = All
+repositories; Permissions (all read) = Actions, Pull requests, Issues, Code
+scanning alerts (Metadata: read is automatic). You will see the structured JSON
+events on stdout exactly as Loki would receive them. The full env-var reference
+is in the README's configuration table.
 
 ## Running checks
 
@@ -112,8 +119,9 @@ Conventions for tests:
   satisfies the `apiClient` interface, so dedup / pruning / health semantics run
   without any network.
 - Anything that **parses untrusted input** gets a fuzz target. The API JSON
-  decode has `FuzzDecodeRunsPage`; keep it green and extend it if you add a
-  parser:
+  decodes have one each — `FuzzDecodeRunsPage`, `FuzzDecodeSearchResp`,
+  `FuzzDecodeCodeAlerts`; keep them green and add one if you parse a new
+  response shape:
 
   ```bash
   go test ./internal/github -run=x -fuzz=FuzzDecodeRunsPage -fuzztime=30s
@@ -140,8 +148,10 @@ left pending") can be added without disturbing the failed-run path:
    pagination via `getJSON`, `urlsafe` for any path segments).
 3. **Interface** — extend the consumer-side `apiClient` interface in
    `internal/collect` so the fake can script it.
-4. **Collector** — emit the event with its own stable `msg` string and dedup
-   key, mirroring `emit` / `markSeen` / `prune`.
+4. **Collector** — add a `collect<Signal>` method that emits each item with its
+   own stable `msg` string; choose the event-once model (dedup by ID, like
+   `collectFailedRuns` + `prune`) or the snapshot model (re-emit the full
+   current set each scan, like `collectPRs`).
 5. **Dashboard** — add a panel to `grafana-dashboard.json` filtering on the new
    `msg`.
 6. **Tests** — `httptest` coverage for the client, fake-driven coverage for the

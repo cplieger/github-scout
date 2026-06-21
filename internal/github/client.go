@@ -12,13 +12,16 @@
 package github
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cplieger/github-scout/internal/model"
@@ -224,4 +227,194 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 		return fmt.Errorf("decode response: %w", err)
 	}
 	return nil
+}
+
+// --- Pull requests & issues (cross-repo via the Search API) ---
+
+// apiSearchResp is the /search/issues envelope.
+type apiSearchResp struct {
+	Items []apiSearchItem `json:"items"`
+}
+
+// apiSearchItem is one search result. The endpoint returns both issues and
+// pull requests; the `is:pr` / `is:issue` query qualifier selects which.
+type apiSearchItem struct {
+	CreatedAt     time.Time `json:"created_at"`
+	Title         string    `json:"title"`
+	HTMLURL       string    `json:"html_url"`
+	RepositoryURL string    `json:"repository_url"`
+	User          struct {
+		Login string `json:"login"`
+	} `json:"user"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	Number int64 `json:"number"`
+	Draft  bool  `json:"draft"`
+}
+
+// SearchOpenPRs returns every open pull request across the owner's repos in
+// a single cross-repo query. exclude is appended raw to the search query
+// (e.g. "-author:app/renovate") so the caller controls noise filtering.
+func (c *Client) SearchOpenPRs(ctx context.Context, owner, exclude string) ([]model.PullRequest, error) {
+	items, err := c.search(ctx, "is:open is:pr", owner, exclude)
+	if err != nil {
+		return nil, err
+	}
+	prs := make([]model.PullRequest, 0, len(items))
+	for i := range items {
+		it := &items[i]
+		prs = append(prs, model.PullRequest{
+			CreatedAt: it.CreatedAt,
+			Repo:      repoFromAPIURL(it.RepositoryURL),
+			Title:     it.Title,
+			Author:    it.User.Login,
+			URL:       it.HTMLURL,
+			Number:    it.Number,
+			Draft:     it.Draft,
+		})
+	}
+	return prs, nil
+}
+
+// SearchOpenIssues returns every open issue across the owner's repos in a
+// single cross-repo query. exclude filters bot/auto-generated noise (e.g.
+// "-author:app/renovate -label:renovate -label:auto-generated").
+func (c *Client) SearchOpenIssues(ctx context.Context, owner, exclude string) ([]model.Issue, error) {
+	items, err := c.search(ctx, "is:open is:issue", owner, exclude)
+	if err != nil {
+		return nil, err
+	}
+	issues := make([]model.Issue, 0, len(items))
+	for i := range items {
+		it := &items[i]
+		labels := make([]string, 0, len(it.Labels))
+		for _, l := range it.Labels {
+			labels = append(labels, l.Name)
+		}
+		issues = append(issues, model.Issue{
+			CreatedAt: it.CreatedAt,
+			Repo:      repoFromAPIURL(it.RepositoryURL),
+			Title:     it.Title,
+			Author:    it.User.Login,
+			Labels:    strings.Join(labels, ","),
+			URL:       it.HTMLURL,
+			Number:    it.Number,
+		})
+	}
+	return issues, nil
+}
+
+// search runs a paginated /search/issues query. base is the qualifier
+// prefix ("is:open is:pr"); owner scopes to user:<owner>; exclude is
+// appended verbatim. The Search API caps at 1000 results; maxPages bounds
+// our cost well below that.
+func (c *Client) search(ctx context.Context, base, owner, exclude string) ([]apiSearchItem, error) {
+	if !urlsafe.IsSafeURLSegment(owner) {
+		return nil, fmt.Errorf("unsafe owner segment: %q", owner)
+	}
+	q := base + " user:" + owner
+	if exclude = strings.TrimSpace(exclude); exclude != "" {
+		q += " " + exclude
+	}
+	var items []apiSearchItem
+	for page := 1; page <= maxPages; page++ {
+		v := url.Values{}
+		v.Set("q", q)
+		v.Set("per_page", strconv.Itoa(perPage))
+		v.Set("page", strconv.Itoa(page))
+		reqURL := c.baseURL + "/search/issues?" + v.Encode()
+
+		var resp apiSearchResp
+		if err := c.getJSON(ctx, reqURL, &resp); err != nil {
+			return items, fmt.Errorf("search %q page %d: %w", base, page, err)
+		}
+		items = append(items, resp.Items...)
+		if len(resp.Items) < perPage {
+			break
+		}
+	}
+	return items, nil
+}
+
+// --- Code scanning alerts (per-repo) ---
+
+// apiCodeAlert is one code-scanning alert.
+type apiCodeAlert struct {
+	CreatedAt time.Time `json:"created_at"`
+	HTMLURL   string    `json:"html_url"`
+	Rule      struct {
+		ID                    string `json:"id"`
+		Description           string `json:"description"`
+		SecuritySeverityLevel string `json:"security_severity_level"`
+	} `json:"rule"`
+	Tool struct {
+		Name string `json:"name"`
+	} `json:"tool"`
+	Number int64 `json:"number"`
+}
+
+// ListCodeScanningAlerts returns open code-scanning alerts for repo. Repos
+// without code scanning enabled (private repos lacking Advanced Security,
+// or repos that never configured CodeQL) return 403/404; those are NOT
+// errors — the repo simply has no alerts to surface, so we return empty.
+func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([]model.CodeScanningAlert, error) {
+	if !urlsafe.IsSafeURLSegment(repo.Owner) || !urlsafe.IsSafeURLSegment(repo.Name) {
+		return nil, fmt.Errorf("unsafe repo segment: %q", repo.FullName())
+	}
+	var alerts []model.CodeScanningAlert
+	for page := 1; page <= maxPages; page++ {
+		v := url.Values{}
+		v.Set("state", "open")
+		v.Set("per_page", strconv.Itoa(perPage))
+		v.Set("page", strconv.Itoa(page))
+		reqURL := fmt.Sprintf("%s/repos/%s/%s/code-scanning/alerts?%s", c.baseURL, repo.Owner, repo.Name, v.Encode())
+
+		var page0 []apiCodeAlert
+		if err := c.getJSON(ctx, reqURL, &page0); err != nil {
+			if codeScanningUnavailable(err) {
+				return nil, nil // feature not enabled for this repo — not an error
+			}
+			return alerts, err
+		}
+		for i := range page0 {
+			a := &page0[i]
+			alerts = append(alerts, model.CodeScanningAlert{
+				CreatedAt: a.CreatedAt,
+				Repo:      repo.FullName(),
+				Rule:      cmp.Or(a.Rule.ID, a.Rule.Description),
+				Severity:  a.Rule.SecuritySeverityLevel,
+				Tool:      a.Tool.Name,
+				URL:       a.HTMLURL,
+				Number:    a.Number,
+			})
+		}
+		if len(page0) < perPage {
+			break
+		}
+	}
+	return alerts, nil
+}
+
+// codeScanningUnavailable reports whether err is a 403/404 — the statuses
+// GitHub returns when code scanning is not enabled / not available for a
+// repository, which the collector treats as "no alerts" rather than a
+// failure.
+func codeScanningUnavailable(err error) bool {
+	var se *httpx.StatusError
+	if errors.As(err, &se) {
+		return se.Code == 403 || se.Code == 404
+	}
+	return false
+}
+
+// repoFromAPIURL extracts "owner/name" from a repository API URL of the
+// form https://api.github.com/repos/<owner>/<name>. Returns the raw input
+// if it doesn't match (defensive; the Search API always populates it).
+func repoFromAPIURL(repoURL string) string {
+	const marker = "/repos/"
+	if i := strings.LastIndex(repoURL, marker); i != -1 {
+		return repoURL[i+len(marker):]
+	}
+	return repoURL
 }
