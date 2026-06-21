@@ -25,6 +25,14 @@ const (
 	// 72h means a Friday-night failure is still surfaced on Monday. It
 	// also bounds the in-memory dedup set and the per-repo API page count.
 	DefaultLookbackHours = 72
+	// DefaultPRExclude filters Renovate's PRs out of the open-PR signal.
+	// Renovate PRs are high-volume bot noise, not "needs a human" work.
+	DefaultPRExclude = "-author:app/renovate"
+	// DefaultIssueExclude filters Renovate "Dependency Dashboard" issues
+	// (authored by the repo owner but carrying the `renovate` label) and
+	// auto-generated trackers (gremlins mutation-testing issues carry the
+	// `auto-generated` label) out of the open-issue signal.
+	DefaultIssueExclude = "-author:app/renovate -label:renovate -label:auto-generated"
 	// maxPollMinutes guards against time.Duration overflow / nonsense
 	// configuration (a year between scans defeats the purpose).
 	maxPollMinutes = 60 * 24 * 365
@@ -36,14 +44,19 @@ const (
 
 // Config is the effective runtime configuration after env var parsing.
 type Config struct {
-	// ExcludeRepos is a set of repo names (not full names) to skip. Used
-	// to silence repos that legitimately fail or that the owner does not
-	// want surfaced. Keyed by bare name for O(1) lookup.
+	// ExcludeRepos is a set of repo names (not full names) to skip across
+	// all signals. Used to silence repos that legitimately fail or that the
+	// owner does not want surfaced. Keyed by bare name for O(1) lookup.
 	ExcludeRepos map[string]bool
 	// Token is the GitHub PAT used for API auth. Never logged.
 	Token string
 	// Owner is the GitHub login (user or org) whose repos are scanned.
 	Owner string
+	// PRExclude is appended to the open-PR search query to filter bot noise.
+	PRExclude string
+	// IssueExclude is appended to the open-issue search query to filter
+	// bot / auto-generated noise.
+	IssueExclude string
 	// PollInterval is the gap between scans (0 = one-shot: scan once then
 	// exit-idle, mirroring registry-stats' one-shot mode for debugging).
 	PollInterval time.Duration
@@ -59,18 +72,32 @@ func Load() Config {
 		Token:        os.Getenv("GITHUB_TOKEN"),
 		Owner:        strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
 		ExcludeRepos: parseExcludes(os.Getenv("EXCLUDE_REPOS")),
+		PRExclude:    GetEnv("PR_EXCLUDE_QUERY", DefaultPRExclude),
+		IssueExclude: GetEnv("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
 		PollInterval: time.Duration(clampedInt("POLL_INTERVAL_MINUTES", DefaultPollMinutes, 0, maxPollMinutes)) * time.Minute,
 		Lookback:     time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
 		LogLevel:     parseLogLevel(os.Getenv("LOG_LEVEL")),
 	}
 }
 
-// Valid reports whether the config has the minimum needed to run: an
-// owner to scan and a token to authenticate. Unauthenticated GitHub API
-// access is rate-limited to 60 req/hour, far too low for a fleet scan, so
-// a missing token is treated as fatal misconfiguration rather than a
-// degraded mode.
-func (c Config) Valid() bool {
+// GetEnv returns os.Getenv(key) when set to a non-empty value, otherwise
+// fallback. An explicitly-set empty string is treated as unset — sufficient
+// for this app's configuration where all values are non-empty or absent.
+// Note: to intentionally disable an exclusion filter, set it to a no-op
+// qualifier rather than empty (empty falls back to the default).
+func GetEnv(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
+}
+
+// Valid reports whether the config has the minimum needed to run: an owner
+// to scan and a token to authenticate. Unauthenticated GitHub API access is
+// rate-limited to 60 req/hour, far too low for a fleet scan, so a missing
+// token is fatal misconfiguration rather than a degraded mode. Pointer
+// receiver: Config is large enough that copying it per call is wasteful.
+func (c *Config) Valid() bool {
 	return c.Owner != "" && c.Token != "" && urlsafe.IsSafeURLSegment(c.Owner)
 }
 

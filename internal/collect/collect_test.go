@@ -12,27 +12,45 @@ import (
 
 // fakeClient is a scripted apiClient for driving the collector without HTTP.
 type fakeClient struct {
-	reposErr error                        // scripted ListRepos error
-	runs     map[string][]model.FailedRun // keyed by repo full name
-	runsErr  map[string]error             // keyed by repo full name
-	repos    []model.Repo
-	calls    int // ListFailedRuns call count
+	reposErr  error
+	prsErr    error
+	issuesErr error
+	runs      map[string][]model.FailedRun
+	runsErr   map[string]error
+	alerts    map[string][]model.CodeScanningAlert
+	alertsErr map[string]error
+	prs       []model.PullRequest
+	issues    []model.Issue
+	repos     []model.Repo
+	runCalls  int
 }
 
-func (f *fakeClient) ListRepos(_ context.Context, _ string) ([]model.Repo, error) {
+func (f *fakeClient) ListRepos(context.Context, string) ([]model.Repo, error) {
 	return f.repos, f.reposErr
 }
 
 func (f *fakeClient) ListFailedRuns(_ context.Context, repo model.Repo, _ time.Time) ([]model.FailedRun, error) {
-	f.calls++
+	f.runCalls++
 	return f.runs[repo.FullName()], f.runsErr[repo.FullName()]
+}
+
+func (f *fakeClient) SearchOpenPRs(context.Context, string, string) ([]model.PullRequest, error) {
+	return f.prs, f.prsErr
+}
+
+func (f *fakeClient) SearchOpenIssues(context.Context, string, string) ([]model.Issue, error) {
+	return f.issues, f.issuesErr
+}
+
+func (f *fakeClient) ListCodeScanningAlerts(_ context.Context, repo model.Repo) ([]model.CodeScanningAlert, error) {
+	return f.alerts[repo.FullName()], f.alertsErr[repo.FullName()]
 }
 
 func fixedNow() time.Time { return time.Date(2026, 6, 21, 12, 0, 0, 0, time.UTC) }
 
 func newCollector(t *testing.T, fc *fakeClient, exclude map[string]bool) *Collector {
 	t.Helper()
-	return New(Deps{
+	return New(&Deps{
 		Client:   fc,
 		Logger:   slog.New(slog.NewTextHandler(testWriter{t}, nil)),
 		Now:      fixedNow,
@@ -49,55 +67,101 @@ func TestScanDiscoveryFailureUnhealthy(t *testing.T) {
 	}
 }
 
-func TestScanHealthyWithNoFailures(t *testing.T) {
+func TestScanHealthyWithNoSignals(t *testing.T) {
 	fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "clean"}}}
 	if !newCollector(t, fc, nil).Scan(context.Background()) {
-		t.Errorf("Scan should be healthy when discovery works, even with zero failures")
+		t.Errorf("Scan should be healthy when discovery works, even with zero signals")
 	}
 }
 
-func TestScanPartialRunFailureStillHealthy(t *testing.T) {
+func TestScanPartialFailuresStillHealthy(t *testing.T) {
+	// PR search, issue search, run listing, and alert listing all error,
+	// but discovery succeeded — the scan must stay healthy (degraded, logged).
 	fc := &fakeClient{
-		repos:   []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runsErr: map[string]error{"cplieger/x": errors.New("one conclusion 500'd")},
+		repos:     []model.Repo{{Owner: "cplieger", Name: "x"}},
+		prsErr:    errors.New("pr search 500"),
+		issuesErr: errors.New("issue search 500"),
+		runsErr:   map[string]error{"cplieger/x": errors.New("runs 500")},
+		alertsErr: map[string]error{"cplieger/x": errors.New("alerts 500")},
 	}
 	if !newCollector(t, fc, nil).Scan(context.Background()) {
-		t.Errorf("a per-repo run-list error must not flip the scan unhealthy")
+		t.Errorf("partial per-signal failures must not flip the scan unhealthy")
 	}
 }
 
-func TestScanExcludesRepos(t *testing.T) {
-	fc := &fakeClient{repos: []model.Repo{
-		{Owner: "cplieger", Name: "x"},
-		{Owner: "cplieger", Name: "noisy"},
-	}}
-	newCollector(t, fc, map[string]bool{"noisy": true}).Scan(context.Background())
-	if fc.calls != 1 {
-		t.Errorf("ListFailedRuns called %d times, want 1 (noisy excluded)", fc.calls)
-	}
-}
-
-func TestDedupEmitsEachRunOnce(t *testing.T) {
-	run := model.FailedRun{Repo: "cplieger/x", RunID: 100, CreatedAt: fixedNow().Add(-1 * time.Hour)}
+func TestScanEmitsAllFourSignals(t *testing.T) {
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runs:  map[string][]model.FailedRun{"cplieger/x": {run}},
+		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}},
+		prs:    []model.PullRequest{{Repo: "cplieger/x", Number: 1, Title: "feat"}},
+		issues: []model.Issue{{Repo: "cplieger/x", Number: 2, Title: "bug"}},
+		runs:   map[string][]model.FailedRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3, Rule: "go/sql-injection"}}},
 	}
 	c := newCollector(t, fc, nil)
-
 	rec := &recordingHandler{}
 	c.logger = slog.New(rec)
+	c.Scan(context.Background())
 
-	c.Scan(context.Background()) // first sighting → emit
-	c.Scan(context.Background()) // second sighting → suppressed
+	for _, msg := range []string{"open pull request", "open issue", "workflow run failed", "code scanning alert"} {
+		if rec.countMsg(msg) != 1 {
+			t.Errorf("msg %q emitted %d times, want 1", msg, rec.countMsg(msg))
+		}
+	}
+}
 
-	if rec.countMsg("workflow run failed") != 1 {
-		t.Errorf("run emitted %d times, want exactly 1", rec.countMsg("workflow run failed"))
+func TestFailedRunsDedupButSnapshotsRepeat(t *testing.T) {
+	// Failed runs are event-once; PRs/issues/alerts are snapshots emitted
+	// every scan. Two scans => run once, but PR/issue/alert twice.
+	fc := &fakeClient{
+		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}},
+		prs:    []model.PullRequest{{Repo: "cplieger/x", Number: 1}},
+		issues: []model.Issue{{Repo: "cplieger/x", Number: 2}},
+		runs:   map[string][]model.FailedRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3}}},
+	}
+	c := newCollector(t, fc, nil)
+	rec := &recordingHandler{}
+	c.logger = slog.New(rec)
+	c.Scan(context.Background())
+	c.Scan(context.Background())
+
+	if got := rec.countMsg("workflow run failed"); got != 1 {
+		t.Errorf("failed run emitted %d times, want 1 (event-once dedup)", got)
+	}
+	for _, msg := range []string{"open pull request", "open issue", "code scanning alert"} {
+		if got := rec.countMsg(msg); got != 2 {
+			t.Errorf("snapshot %q emitted %d times over 2 scans, want 2", msg, got)
+		}
+	}
+}
+
+func TestExcludeReposSkipsAllSignals(t *testing.T) {
+	// Excluded repo must be skipped for runs/alerts (per-repo loop) AND
+	// filtered from the cross-repo PR/issue snapshots.
+	fc := &fakeClient{
+		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}, {Owner: "cplieger", Name: "noisy"}},
+		prs:    []model.PullRequest{{Repo: "cplieger/noisy", Number: 1}, {Repo: "cplieger/x", Number: 2}},
+		issues: []model.Issue{{Repo: "cplieger/noisy", Number: 3}},
+		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 4}}},
+	}
+	c := newCollector(t, fc, map[string]bool{"noisy": true})
+	rec := &recordingHandler{}
+	c.logger = slog.New(rec)
+	c.Scan(context.Background())
+
+	if fc.runCalls != 1 {
+		t.Errorf("ListFailedRuns called %d times, want 1 (noisy excluded)", fc.runCalls)
+	}
+	if rec.countMsg("open pull request") != 1 {
+		t.Errorf("expected only the non-noisy PR, got %d", rec.countMsg("open pull request"))
+	}
+	if rec.countMsg("open issue") != 0 {
+		t.Errorf("noisy repo's issue should be filtered, got %d", rec.countMsg("open issue"))
 	}
 }
 
 func TestPruneDropsRunsOlderThanLookback(t *testing.T) {
-	old := model.FailedRun{Repo: "cplieger/x", RunID: 1, CreatedAt: fixedNow().Add(-100 * time.Hour)} // older than 72h lookback
+	old := model.FailedRun{Repo: "cplieger/x", RunID: 1, CreatedAt: fixedNow().Add(-100 * time.Hour)}
 	fresh := model.FailedRun{Repo: "cplieger/x", RunID: 2, CreatedAt: fixedNow().Add(-1 * time.Hour)}
 	fc := &fakeClient{
 		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
@@ -105,8 +169,6 @@ func TestPruneDropsRunsOlderThanLookback(t *testing.T) {
 	}
 	c := newCollector(t, fc, nil)
 	c.Scan(context.Background())
-
-	// The old run is pruned (outside lookback); the fresh one is retained.
 	if _, ok := c.seen[1]; ok {
 		t.Errorf("run 1 (older than lookback) should have been pruned")
 	}
@@ -117,7 +179,6 @@ func TestPruneDropsRunsOlderThanLookback(t *testing.T) {
 
 // --- test logging helpers ---
 
-// testWriter routes a logger's output into t.Log so failing tests show it.
 type testWriter struct{ t *testing.T }
 
 func (w testWriter) Write(p []byte) (int, error) {
@@ -125,7 +186,6 @@ func (w testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// recordingHandler counts emitted records by message for assertions.
 type recordingHandler struct{ records []slog.Record }
 
 func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }

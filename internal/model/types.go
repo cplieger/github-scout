@@ -1,27 +1,38 @@
 // Package model holds the pure data types describing the GitHub signals
 // github-scout surfaces. Types here carry no behavior beyond JSON struct
 // tags. The tags define the structured-log field names that Loki indexes
-// and the Grafana dashboard queries, so they are a contract: changing a
-// tag renames a Loki field and silently breaks dashboard panels and the
+// and the Grafana dashboard queries, so they are a contract: renaming a
+// tag renames a Loki field and silently breaks dashboard panels and any
 // Loki ruler alert. Treat tag changes as a behavior change, not a refactor.
+//
+// Two emission models are used (see internal/collect):
+//
+//   - Event-once: FailedRun. A failure happens once; github-scout emits
+//     each run ID a single time so a plain log count equals the number of
+//     distinct failures.
+//   - Snapshot: PullRequest, Issue, CodeScanningAlert. These are current
+//     STATE (an item stays open across scans), so github-scout emits the
+//     full current set every scan. When an item is closed/merged/fixed it
+//     simply stops appearing in future snapshots, and the dashboard reads
+//     the most recent snapshot as "what is open right now".
 package model
 
 import "time"
 
 // Repo is a GitHub repository discovered for an owner. Only the fields
-// github-scout needs to scope follow-up API calls and to decide whether
-// a repo is worth polling are retained.
+// github-scout needs to scope follow-up API calls and to decide whether a
+// repo is worth polling are retained.
 type Repo struct {
 	// Owner is the login of the account or org that owns the repo.
 	Owner string `json:"owner"`
 	// Name is the repository name (without the owner prefix).
 	Name string `json:"name"`
-	// Private reports whether the repo is private. github-scout polls
-	// every repo it can read; the flag is retained only for logging and
-	// for callers that want to scope a signal type to public repos.
+	// Private reports whether the repo is private. github-scout polls every
+	// repo it can read; the flag is retained for logging and so callers can
+	// skip features (code scanning) unavailable on private repos.
 	Private bool `json:"private"`
-	// Archived repos are skipped: they produce no new workflow runs and
-	// their old failures are not actionable.
+	// Archived repos are skipped: no new runs, and old signals are not
+	// actionable.
 	Archived bool `json:"archived"`
 }
 
@@ -29,42 +40,65 @@ type Repo struct {
 func (r Repo) FullName() string { return r.Owner + "/" + r.Name }
 
 // FailedRun is a single failed (or timed-out / startup-failed) GitHub
-// Actions workflow run. It is the primary actionable signal github-scout
-// emits: each one is a build/release/scheduled job that needs a human to
-// look at it. Every field maps to a structured-log key consumed by the
-// Grafana "Failed Actions" table and is chosen to be directly actionable
-// (the URL is clickable, the repo/workflow/branch locate the failure).
+// Actions workflow run — the event-once signal. Each is a build / release /
+// scheduled job that needs a human to look at it.
 type FailedRun struct {
-	// CreatedAt is when the run was created on GitHub.
-	CreatedAt time.Time `json:"created_at"`
-	// Repo is the "owner/name" the run belongs to.
-	Repo string `json:"repo"`
-	// Workflow is the human-readable workflow name (e.g. "CI", "Release").
-	Workflow string `json:"workflow"`
-	// Branch is the head branch the run executed against.
-	Branch string `json:"branch"`
-	// Event is the trigger (push, pull_request, schedule, release, ...).
-	// It distinguishes a scheduled gremlins failure from a CI failure.
-	Event string `json:"event"`
-	// Conclusion is the failure flavour: failure, timed_out, or
-	// startup_failure.
-	Conclusion string `json:"conclusion"`
-	// URL is the html_url of the run — the clickable "go fix it" link.
-	URL string `json:"url"`
-	// RunID is GitHub's globally-unique run identifier. It is the dedup
-	// key: github-scout emits each RunID at most once per process lifetime
-	// so a plain log count equals the number of distinct failures.
-	RunID int64 `json:"run_id"`
-	// RunNumber is the per-workflow incrementing run counter shown in the
-	// GitHub UI (e.g. "#1060").
+	CreatedAt  time.Time `json:"created_at"`
+	Repo       string    `json:"repo"`
+	Workflow   string    `json:"workflow"`
+	Branch     string    `json:"branch"`
+	Event      string    `json:"event"`
+	Conclusion string    `json:"conclusion"`
+	URL        string    `json:"url"`
+	// RunID is GitHub's globally-unique run identifier and the dedup key.
+	RunID     int64 `json:"run_id"`
 	RunNumber int64 `json:"run_number"`
 }
 
+// PullRequest is an open pull request — a snapshot signal. github-scout
+// emits the full set of currently-open PRs each scan.
+type PullRequest struct {
+	CreatedAt time.Time `json:"created_at"`
+	Repo      string    `json:"repo"`
+	Title     string    `json:"title"`
+	Author    string    `json:"author"`
+	URL       string    `json:"url"`
+	// Number is the PR number, unique within its repo (dedup key is
+	// repo+number).
+	Number int64 `json:"number"`
+	// Draft marks work-in-progress PRs so the dashboard can de-emphasise them.
+	Draft bool `json:"draft"`
+}
+
+// Issue is an open issue — a snapshot signal. Renovate "Dependency
+// Dashboard" issues and auto-generated (gremlins) trackers are excluded at
+// the query level (see internal/github), so what reaches here is real,
+// actionable work.
+type Issue struct {
+	CreatedAt time.Time `json:"created_at"`
+	Repo      string    `json:"repo"`
+	Title     string    `json:"title"`
+	Author    string    `json:"author"`
+	Labels    string    `json:"labels"` // comma-joined for flat log rendering
+	URL       string    `json:"url"`
+	Number    int64     `json:"number"`
+}
+
+// CodeScanningAlert is an open CodeQL / code-scanning alert — a snapshot
+// signal, collected per-repo (the API has no cross-repo variant).
+type CodeScanningAlert struct {
+	CreatedAt time.Time `json:"created_at"`
+	Repo      string    `json:"repo"`
+	Rule      string    `json:"rule"`
+	Severity  string    `json:"severity"` // security severity: critical/high/medium/low
+	Tool      string    `json:"tool"`
+	URL       string    `json:"url"`
+	Number    int64     `json:"number"`
+}
+
 // FailureConclusions is the set of run conclusions github-scout treats as
-// actionable failures. success/neutral/skipped/cancelled are deliberately
-// excluded: a cancelled run is usually a human superseding it, and skipped
-// runs are non-events. The GitHub Actions API accepts each of these as a
-// `status` query value, so the collector issues one query per conclusion.
-//
-// Ordering is stable so logs and tests see a deterministic query sequence.
+// actionable failures. success/neutral/skipped/cancelled are excluded: a
+// cancelled run is usually a human superseding it. The Actions API accepts
+// each as a `status` query value, so the collector issues one query per
+// conclusion. Ordering is stable for deterministic logs and tests.
 var FailureConclusions = []string{"failure", "timed_out", "startup_failure"}

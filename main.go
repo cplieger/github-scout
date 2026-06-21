@@ -1,22 +1,22 @@
 package main
 
 // github-scout scans all of a GitHub owner's repositories on a schedule
-// and emits each newly-detected failed Actions run (build, release,
-// scheduled job, ...) as a structured log line for Loki. It exists
-// because the Grafana GitHub-datasource plugin cannot enumerate "all
-// workflows across all repos", and private repos have no org-level alert
-// endpoint — so a small poller is the only way to get a single cross-repo
-// "what just broke" view.
+// and emits the four actionable signals — failed Actions runs, open pull
+// requests, open issues, and code-scanning alerts — as structured log
+// lines for Loki. It is the single source for a cross-repo GitHub
+// dashboard, replacing the Grafana GitHub-datasource plugin (which cannot
+// enumerate "all workflows across all repos" and has no cross-repo view).
 //
 // main.go is a pure composition root: it wires config -> *http.Client ->
 // github.Client -> collect.Collector -> health.Marker, then runs the
 // signal-driven poll loop. All logic lives in internal/*; this file holds
 // no business rules.
 //
-// Output model is slog-to-stdout, not a /metrics endpoint: failed runs are
-// high-cardinality events (unique run IDs/URLs), not numeric time-series,
-// so they belong in Loki. There is no HTTP server and no listening port;
-// health is a file marker checked by the `health` subcommand.
+// Output model is slog-to-stdout, not a /metrics endpoint: these signals
+// are high-cardinality events/records (run IDs, PR/issue numbers, URLs),
+// not numeric time-series, so they belong in Loki. There is no HTTP server
+// and no listening port; health is a file marker checked by the `health`
+// subcommand.
 
 import (
 	"context"
@@ -43,7 +43,7 @@ func main() {
 
 	cfg := config.Load()
 	setupLogging(cfg.LogLevel)
-	logConfig(cfg)
+	logConfig(&cfg)
 
 	if !cfg.Valid() {
 		slog.Error("invalid configuration; need GITHUB_OWNER and GITHUB_TOKEN",
@@ -62,12 +62,14 @@ func main() {
 
 	httpClient := httpx.NewClient(30 * time.Second)
 	gh := github.NewClient(httpClient, cfg.Token, nil, slog.Default())
-	collector := collect.New(collect.Deps{
-		Client:   gh,
-		Logger:   slog.Default(),
-		Owner:    cfg.Owner,
-		Lookback: cfg.Lookback,
-		Exclude:  cfg.ExcludeRepos,
+	collector := collect.New(&collect.Deps{
+		Client:       gh,
+		Logger:       slog.Default(),
+		Owner:        cfg.Owner,
+		Lookback:     cfg.Lookback,
+		Exclude:      cfg.ExcludeRepos,
+		PRExclude:    cfg.PRExclude,
+		IssueExclude: cfg.IssueExclude,
 	})
 
 	// First scan inline so the container reports healthy (or not) quickly.
@@ -131,7 +133,7 @@ func setupLogging(level slog.Level) {
 
 // logConfig logs the active configuration at startup. The token is never
 // logged — only whether one is present.
-func logConfig(cfg config.Config) {
+func logConfig(cfg *config.Config) {
 	slog.Info("configuration loaded",
 		"owner", cfg.Owner,
 		"token_set", cfg.Token != "",

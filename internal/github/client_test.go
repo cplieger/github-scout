@@ -182,3 +182,109 @@ func itoa(n int) string {
 	}
 	return string(b[i:])
 }
+
+func TestSearchOpenPRsCrossRepo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("q")
+		if !strings.Contains(q, "is:open is:pr") || !strings.Contains(q, "user:cplieger") {
+			t.Errorf("PR query missing qualifiers: %q", q)
+		}
+		if !strings.Contains(q, "-author:app/renovate") {
+			t.Errorf("PR query missing exclude: %q", q)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[
+			{"number":7,"title":"feat: x","html_url":"https://github.com/cplieger/a/pull/7","draft":false,"created_at":"2026-06-20T10:00:00Z","user":{"login":"cplieger"},"repository_url":"https://api.github.com/repos/cplieger/a"},
+			{"number":8,"title":"wip","html_url":"https://github.com/cplieger/b/pull/8","draft":true,"created_at":"2026-06-20T11:00:00Z","user":{"login":"cplieger"},"repository_url":"https://api.github.com/repos/cplieger/b"}
+		]}`))
+	}))
+	defer srv.Close()
+
+	prs, err := newTestClient(t, srv).SearchOpenPRs(context.Background(), "cplieger", "-author:app/renovate")
+	if err != nil {
+		t.Fatalf("SearchOpenPRs: %v", err)
+	}
+	if len(prs) != 2 {
+		t.Fatalf("got %d PRs, want 2", len(prs))
+	}
+	if prs[0].Repo != "cplieger/a" || prs[0].Number != 7 || prs[0].Draft {
+		t.Errorf("PR0 parsed wrong: %+v", prs[0])
+	}
+	if prs[1].Repo != "cplieger/b" || !prs[1].Draft {
+		t.Errorf("PR1 parsed wrong: %+v", prs[1])
+	}
+}
+
+func TestSearchOpenIssuesJoinsLabels(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("q")
+		if !strings.Contains(q, "is:open is:issue") {
+			t.Errorf("issue query missing qualifier: %q", q)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[
+			{"number":12,"title":"bug","html_url":"https://github.com/cplieger/a/issues/12","created_at":"2026-06-20T10:00:00Z","user":{"login":"someone"},"labels":[{"name":"bug"},{"name":"p1"}],"repository_url":"https://api.github.com/repos/cplieger/a"}
+		]}`))
+	}))
+	defer srv.Close()
+
+	issues, err := newTestClient(t, srv).SearchOpenIssues(context.Background(), "cplieger", "-label:renovate")
+	if err != nil {
+		t.Fatalf("SearchOpenIssues: %v", err)
+	}
+	if len(issues) != 1 || issues[0].Labels != "bug,p1" {
+		t.Errorf("issue labels not joined: %+v", issues)
+	}
+}
+
+func TestListCodeScanningAlerts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("state") != "open" {
+			t.Errorf("expected state=open, got %q", r.URL.Query().Get("state"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"number":3,"created_at":"2026-06-20T10:00:00Z","html_url":"https://github.com/cplieger/a/security/code-scanning/3","rule":{"id":"go/sql-injection","security_severity_level":"high"},"tool":{"name":"CodeQL"}}
+		]`))
+	}))
+	defer srv.Close()
+
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	if err != nil {
+		t.Fatalf("ListCodeScanningAlerts: %v", err)
+	}
+	if len(alerts) != 1 || alerts[0].Rule != "go/sql-injection" || alerts[0].Severity != "high" || alerts[0].Tool != "CodeQL" {
+		t.Errorf("alert parsed wrong: %+v", alerts)
+	}
+}
+
+func TestCodeScanningNotEnabledIsNotError(t *testing.T) {
+	// Repos without code scanning return 404/403 — the client maps these to
+	// an empty result, not an error, so a repo lacking CodeQL is silent.
+	for _, status := range []int{http.StatusNotFound, http.StatusForbidden} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "no code scanning", status)
+		}))
+		alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+		srv.Close()
+		if err != nil {
+			t.Errorf("status %d should be tolerated, got error: %v", status, err)
+		}
+		if len(alerts) != 0 {
+			t.Errorf("status %d should yield no alerts, got %d", status, len(alerts))
+		}
+	}
+}
+
+func TestRepoFromAPIURL(t *testing.T) {
+	tests := map[string]string{
+		"https://api.github.com/repos/cplieger/github-scout": "cplieger/github-scout",
+		"https://api.github.com/repos/owner/name":            "owner/name",
+		"garbage": "garbage",
+	}
+	for in, want := range tests {
+		if got := repoFromAPIURL(in); got != want {
+			t.Errorf("repoFromAPIURL(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
