@@ -152,26 +152,33 @@ func parseExcludes(s string) map[string]bool {
 	return out
 }
 
-// clampedInt reads an integer env var and clamps it to [lo, hi]. On parse
-// error or out-of-range it returns def (when below lo) or the clamp bound.
-// A negative or non-numeric value falls back to def. Used for LOOKBACK_HOURS.
+// clampedInt reads an integer env var and clamps it into [lo, hi]. A
+// non-numeric or negative value is treated as "unset" and falls back to def.
+// A non-negative value below lo is floored to lo; a value above hi is capped
+// to hi (and logged). Used for LOOKBACK_HOURS (def=72, lo=1, hi=720).
+//
+// The negative-vs-zero split is deliberate: LOOKBACK_HOURS=0 is read as "the
+// smallest useful window" (floor to lo=1), whereas a negative value is
+// nonsense input that should restore the default.
+//
+// The clamp itself uses the min/max builtins rather than `if v < lo` / `if v
+// > hi` comparisons. A comparison-based clamp has an unkillable
+// CONDITIONALS_BOUNDARY mutant at each bound (at v==lo, both `v < lo` and `v
+// <= lo` yield lo; likewise at v==hi) — the classic equivalent mutant.
+// Expressing the clamp as max(lo, min(v, hi)) removes those operators
+// entirely. The one remaining comparison (clamped != v, gating the
+// over-max warning) is exercised by TestClampedIntWarnsOverMax, which
+// captures the slog output — so its boundary mutant is killable too.
 func clampedInt(key string, def, lo, hi int) int {
 	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
-	if err != nil {
+	if err != nil || v < 0 {
 		return def
 	}
-	if v < lo {
-		// LOOKBACK_HOURS floors at lo=1; a 0/negative value falls back to def.
-		if v < 0 {
-			return def
-		}
-		return lo
+	clamped := max(lo, min(v, hi))
+	if clamped != v {
+		slog.Warn("env value clamped", "key", key, "requested", v, "clamped_to", clamped)
 	}
-	if v > hi {
-		slog.Warn("env value clamped", "key", key, "requested", v, "max", hi)
-		return hi
-	}
-	return v
+	return clamped
 }
 
 // parseLogLevel converts LOG_LEVEL to slog.Level (default Info).
