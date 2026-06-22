@@ -77,12 +77,14 @@ The guiding principle: surface **actionable items**, not stats for stats' sake.
 The four signals split into two shapes:
 
 - **Event-once** (Actions runs). A completed run happens at a point in time, so
-  each run ID is emitted **exactly once** per process lifetime, as
-  `msg="workflow run"` carrying its `conclusion`. A plain log count therefore
-  equals the number of distinct runs; the dashboard filters by conclusion for
-  the failures view and derives the failure rate from the same stream. The dedup
-  set is an in-memory map of run ID → creation time, pruned to the lookback
-  window so memory stays bounded.
+  each run ID is emitted **exactly once**, as `msg="workflow run"` carrying its
+  `conclusion`. A plain log count therefore equals the number of distinct runs;
+  the dashboard filters by conclusion for the failures view and derives the
+  failure rate from the same stream. The dedup set is a map of run ID → creation
+  time, pruned to the lookback window so it stays bounded. It lives in memory in
+  the long-lived scheduled process and is also persisted to a small file
+  (`/tmp/seen-runs.json`) so the same run is not re-emitted across one-shot
+  `trigger` runs — see _State_ below.
 - **Snapshot** (open PRs, open issues, code-scanning alerts). These are current
   _state_: an item stays open across scans, so github-scout re-emits the full
   current set **every scan**. When an item is closed / merged / fixed it simply
@@ -90,12 +92,17 @@ The four signals split into two shapes:
   scan as "what is open right now" (panels deduplicate by repo + number over a
   window slightly longer than the poll interval). No dedup state is needed.
 
-github-scout is **stateless** — there is no database and no on-disk state. The
-only cross-scan state is the event-once dedup set, which lives in memory;
-history lives in Loki. A consequence: a process restart can re-log runs still
-inside the lookback window. The dashboard's count tiles deduplicate by run ID so
-counts stay correct. Given the runs inside the window are bounded and restarts
-are rare, this is a deliberate simplicity-for-robustness trade.
+github-scout keeps **no database** — history lives in Loki. The only cross-scan
+state is the event-once dedup set (run ID → creation time, bounded to the
+lookback window). In the long-lived scheduled/resident process it lives in
+memory; under an external scheduler each `trigger` is a fresh process, so the
+set is persisted to a small JSON file at `/tmp/seen-runs.json` and reloaded on
+the next trigger. Because `/tmp` is shared across `docker exec` triggers of the
+same running container, a run is emitted once and not re-emitted on the
+following trigger. A cold start — the first run, or a container **recreate**
+that clears `/tmp` — at worst re-logs runs still inside the lookback window; the
+dashboard also dedups run counts by run ID, so counts stay correct either way.
+Persistence is a best-effort optimisation, never a correctness dependency.
 
 ### Architecture
 
@@ -144,9 +151,9 @@ services:
       # PR_EXCLUDE_QUERY: "-author:app/renovate"
       # ISSUE_EXCLUDE_QUERY: "-author:app/renovate -label:renovate -label:auto-generated"
 
-    # Writable home for the /tmp/.healthy marker; the app is otherwise stateless.
+    # Writable /tmp for the health marker + the dedup state file (seen-runs.json).
     tmpfs:
-      - "/tmp:size=1m,mode=1777,noexec,nosuid,nodev"
+      - "/tmp:size=16m,mode=1777,noexec,nosuid,nodev"
 ```
 
 The image is published to `ghcr.io/cplieger/github-scout`. Pin a digest in
@@ -203,11 +210,12 @@ or an external scheduler, your choice:
 - **Trigger** (`github-scout trigger`): one scan, then exit 0/1 — the target
   for that external scheduler, or a manual one-shot run.
 
-Each `trigger` is an independent process, so it does not share the resident
-timer's in-memory failed-run dedup set: failures still inside the lookback
-window are re-emitted on each trigger. The dashboard deduplicates by run ID, so
-counts stay correct — consistent with the snapshot signals (PRs / issues /
-alerts), which re-emit the full open set every scan anyway.
+Each `trigger` is an independent process, but the run dedup set is persisted to
+`/tmp/seen-runs.json` (shared across `docker exec` triggers of the same running
+container), so a trigger reloads the previous one's set and emits each completed
+run exactly once — no re-emission across triggers. A container recreate clears
+`/tmp` and at worst re-logs the lookback window once. The snapshot signals
+(PRs / issues / alerts) re-emit the full open set every scan by design.
 
 Two optional noise filters take raw GitHub search qualifiers, appended to the
 cross-repo PR/issue searches:
@@ -290,8 +298,9 @@ the container unhealthy.
   `gcr.io/distroless/static` with no package manager or shell to exploit.
 - **No listening port.** There is no HTTP server — nothing to reach from the
   network. Output is stdout; health is a file marker.
-- **No persisted state.** The only filesystem write is the `/tmp/.healthy`
-  marker on a small `noexec,nosuid,nodev` tmpfs.
+- **Minimal state on tmpfs.** The only filesystem writes are the `/tmp/.healthy`
+  marker and a small `/tmp/seen-runs.json` dedup file, both on a
+  `noexec,nosuid,nodev` tmpfs — no database, no persistent volume.
 - **Minimal supply chain.** No non-`cplieger` runtime dependencies; the
   `cplieger` `httpx` and `health` libraries provide retry/backoff and the health
   probe. Response bodies are capped with `io.LimitReader`; URL path segments
@@ -308,7 +317,9 @@ the container unhealthy.
   signal types can be added later (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 - **github.com only.** GitHub Enterprise Server would require making the API
   base URL configurable.
-- **Re-emission on restart** (see _Two emission models_ above).
+- **Re-emission on container recreate.** A recreate (not a plain restart) clears
+  the `/tmp` dedup file, so the next scan re-logs runs still inside the lookback
+  window once (see _State_ above).
 
 ## Development
 

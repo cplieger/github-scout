@@ -15,18 +15,34 @@
 //     stops appearing in later snapshots, so the dashboard reads the most
 //     recent scan as "what is open right now" — no dedup state needed.
 //
-// github-scout is stateless: the only cross-scan state is the run dedup
-// set, and a restart at worst re-emits runs still inside the lookback
-// window (the dashboard dedups run counts by run_id).
+// The only cross-scan state is the run dedup set. In the long-lived
+// scheduled/resident process it lives in memory across scans. Under an
+// external scheduler (Ofelia job-exec) each `trigger` is a fresh process,
+// so the set is persisted to a small JSON file (Deps.StatePath, e.g.
+// /tmp/seen-runs.json, which is shared across `docker exec` triggers of the
+// same running container) and reloaded at the start of the next trigger.
+// Either way a cold start — the first run, or a container recreate that
+// clears /tmp — at worst re-emits runs still inside the lookback window
+// (the dashboard dedups run counts by run_id), so persistence is a
+// best-effort optimization, never a correctness dependency.
 package collect
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"io/fs"
 	"log/slog"
 	"time"
 
+	"github.com/cplieger/atomicfile"
 	"github.com/cplieger/github-scout/internal/model"
 )
+
+// maxStateBytes caps the dedup state file read. The set is bounded to the
+// lookback window (~hundreds–thousands of run IDs, tens of KB of JSON), so
+// 8 MiB is an ample guard against a corrupt/oversized file.
+const maxStateBytes = 8 << 20
 
 // Collector holds the cross-scan state: the GitHub client, scan
 // parameters, and the in-memory failed-run dedup set. Construct via New.
@@ -39,6 +55,7 @@ type Collector struct {
 	owner        string
 	prExclude    string // raw search qualifiers to filter PR noise (e.g. Renovate)
 	issueExclude string // raw search qualifiers to filter issue noise (Renovate, auto-generated)
+	statePath    string // optional path to persist `seen` across trigger processes ("" = in-memory only)
 	lookback     time.Duration
 }
 
@@ -62,11 +79,20 @@ type Deps struct {
 	Owner        string
 	PRExclude    string
 	IssueExclude string
-	Lookback     time.Duration
+	// StatePath, when non-empty, is where the run dedup set is persisted
+	// (atomic JSON) at the end of each scan and reloaded by New. Set it for
+	// trigger-mode deployments (each trigger is a fresh process) to a path
+	// shared across execs of the same container, e.g. /tmp/seen-runs.json.
+	// Leave empty for the long-lived scheduled/resident process (in-memory
+	// dedup) and in tests.
+	StatePath string
+	Lookback  time.Duration
 }
 
-// New constructs a Collector with an empty dedup set. Takes *Deps to avoid
-// copying the (large) struct.
+// New constructs a Collector. When Deps.StatePath is set, the persisted run
+// dedup set is loaded from it (a missing or corrupt file simply starts the
+// set empty); otherwise the set starts empty. Takes *Deps to avoid copying
+// the (large) struct.
 func New(d *Deps) *Collector {
 	logger := d.Logger
 	if logger == nil {
@@ -76,7 +102,7 @@ func New(d *Deps) *Collector {
 	if now == nil {
 		now = time.Now
 	}
-	return &Collector{
+	c := &Collector{
 		client:       d.Client,
 		logger:       logger,
 		now:          now,
@@ -85,8 +111,13 @@ func New(d *Deps) *Collector {
 		owner:        d.Owner,
 		prExclude:    d.PRExclude,
 		issueExclude: d.IssueExclude,
+		statePath:    d.StatePath,
 		lookback:     d.Lookback,
 	}
+	if c.statePath != "" {
+		c.loadState()
+	}
+	return c
 }
 
 // Scan runs one full cycle and returns whether it was healthy. Health
@@ -123,6 +154,9 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 	}
 
 	c.prune(cutoff)
+	if c.statePath != "" {
+		c.saveState()
+	}
 	c.logger.Info("scan complete",
 		"scanned", scanned, "skipped", skipped,
 		"open_prs", openPRs, "open_issues", openIssues,
@@ -257,5 +291,43 @@ func (c *Collector) prune(cutoff time.Time) {
 		if created.Before(cutoff) {
 			delete(c.seen, id)
 		}
+	}
+}
+
+// loadState reads the persisted dedup set from statePath into c.seen. A
+// missing file is the normal cold start; an unreadable or corrupt file is
+// tolerated with a warning, since the only cost of a cold set is re-emitting
+// runs still inside the lookback window. Called by New only when statePath
+// is set.
+func (c *Collector) loadState() {
+	data, err := atomicfile.ReadBounded(context.Background(), c.statePath, maxStateBytes)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			c.logger.Warn("dedup state unreadable; starting cold", "path", c.statePath, "error", err)
+		}
+		return
+	}
+	var seen map[int64]time.Time
+	if err := json.Unmarshal(data, &seen); err != nil {
+		c.logger.Warn("dedup state corrupt; starting cold", "path", c.statePath, "error", err)
+		return
+	}
+	if seen != nil {
+		c.seen = seen
+	}
+}
+
+// saveState atomically persists c.seen to statePath. Best-effort: a marshal
+// or write failure is logged but never fails the scan (the next trigger just
+// re-emits a few runs). Called at the end of Scan only when statePath is set,
+// after prune has bounded the set to the lookback window.
+func (c *Collector) saveState() {
+	data, err := json.Marshal(c.seen)
+	if err != nil {
+		c.logger.Warn("dedup state marshal failed", "error", err)
+		return
+	}
+	if err := atomicfile.WriteFile(context.Background(), c.statePath, data); err != nil {
+		c.logger.Warn("dedup state save failed", "path", c.statePath, "error", err)
 	}
 }

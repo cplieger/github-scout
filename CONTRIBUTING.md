@@ -27,9 +27,11 @@ contradict those decisions need a strong justification.
 ## Architecture
 
 `github-scout` is a single Go binary that polls the GitHub REST API on a
-schedule and emits four actionable signals as JSON to stdout. It is stateless — no
-database, no on-disk state beyond the health marker; history lives in Loki.
-There is no HTTP server and no listening port.
+schedule and emits four actionable signals as JSON to stdout. It keeps no
+database — history lives in Loki. The only cross-scan state is the event-once
+run dedup set, which lives in memory and is also persisted to a small
+`/tmp/seen-runs.json` so it survives across one-shot `trigger` processes (see
+the README's _State_ section). There is no HTTP server and no listening port.
 
 `main.go` is a **pure composition root** — it wires config → `httpx` client →
 `github.Client` → `collect.Collector` → health marker, then runs the
