@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"log/slog"
 	"testing"
 	"time"
@@ -126,4 +127,124 @@ func TestValid(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExcludeQueriesDefaultWhenUnset(t *testing.T) {
+	// Unset (empty) PR/issue exclude vars fall back to the defaults.
+	t.Setenv("PR_EXCLUDE_QUERY", "")
+	t.Setenv("ISSUE_EXCLUDE_QUERY", "")
+
+	cfg := Load()
+
+	if cfg.PRExclude != DefaultPRExclude {
+		t.Errorf("PRExclude = %q, want default %q", cfg.PRExclude, DefaultPRExclude)
+	}
+	if cfg.IssueExclude != DefaultIssueExclude {
+		t.Errorf("IssueExclude = %q, want default %q", cfg.IssueExclude, DefaultIssueExclude)
+	}
+}
+
+func TestExcludeQueriesOverriddenByEnv(t *testing.T) {
+	// A non-empty value is used verbatim instead of the default (exercises
+	// GetEnv's "env set" branch).
+	t.Setenv("PR_EXCLUDE_QUERY", "-author:dependabot")
+	t.Setenv("ISSUE_EXCLUDE_QUERY", "-label:wontfix")
+
+	cfg := Load()
+
+	if cfg.PRExclude != "-author:dependabot" {
+		t.Errorf("PRExclude = %q, want -author:dependabot", cfg.PRExclude)
+	}
+	if cfg.IssueExclude != "-label:wontfix" {
+		t.Errorf("IssueExclude = %q, want -label:wontfix", cfg.IssueExclude)
+	}
+}
+
+func TestParseLogLevels(t *testing.T) {
+	tests := []struct {
+		in   string
+		want slog.Level
+	}{
+		{"debug", slog.LevelDebug},
+		{"warn", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"info", slog.LevelInfo},
+		{"", slog.LevelInfo},
+		{"nonsense", slog.LevelInfo},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Setenv("LOG_LEVEL", tt.in)
+			if got := Load().LogLevel; got != tt.want {
+				t.Errorf("LOG_LEVEL=%q LogLevel = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLookbackAtMaxIsAcceptedWithoutWarning(t *testing.T) {
+	// LOOKBACK_HOURS exactly at the maximum is accepted as-is and must NOT
+	// emit a "clamped" warning. This pins the clamp boundary at v > hi
+	// (a v >= hi mutant would warn spuriously at the legal maximum).
+	rec := captureDefaultSlog(t)
+
+	t.Setenv("LOOKBACK_HOURS", "720") // == maxLookbackHours
+	cfg := Load()
+
+	if cfg.Lookback != maxLookbackHours*time.Hour {
+		t.Errorf("Lookback = %v, want %v (max accepted as-is)", cfg.Lookback, maxLookbackHours*time.Hour)
+	}
+	if n := rec.count("env value clamped"); n != 0 {
+		t.Errorf("value at exactly the max should not warn; got %d clamp warnings", n)
+	}
+}
+
+func TestLookbackAboveMaxIsClampedWithWarning(t *testing.T) {
+	// One hour over the maximum is clamped down and warns exactly once —
+	// the positive control for the boundary pinned above.
+	rec := captureDefaultSlog(t)
+
+	t.Setenv("LOOKBACK_HOURS", "721")
+	cfg := Load()
+
+	if cfg.Lookback != maxLookbackHours*time.Hour {
+		t.Errorf("Lookback = %v, want clamped to %v", cfg.Lookback, maxLookbackHours*time.Hour)
+	}
+	if n := rec.count("env value clamped"); n != 1 {
+		t.Errorf("value over the max should warn once; got %d clamp warnings", n)
+	}
+}
+
+// captureDefaultSlog redirects the global slog logger (which config's clamp
+// and parse warnings target) to a recording handler for the duration of the
+// test, restoring the previous default on cleanup.
+func captureDefaultSlog(t *testing.T) *countingHandler {
+	t.Helper()
+	rec := &countingHandler{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(rec))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return rec
+}
+
+// countingHandler records log messages so a test can assert on warnings the
+// config package emits through the global slog logger.
+type countingHandler struct{ msgs []string }
+
+func (h *countingHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *countingHandler) Handle(_ context.Context, r slog.Record) error {
+	h.msgs = append(h.msgs, r.Message)
+	return nil
+}
+func (h *countingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h *countingHandler) WithGroup(string) slog.Handler      { return h }
+
+func (h *countingHandler) count(msg string) int {
+	n := 0
+	for _, m := range h.msgs {
+		if m == msg {
+			n++
+		}
+	}
+	return n
 }

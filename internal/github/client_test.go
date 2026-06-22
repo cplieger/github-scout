@@ -2,9 +2,11 @@ package github
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -330,5 +332,122 @@ func TestRepoFromAPIURL(t *testing.T) {
 		if got := repoFromAPIURL(in); got != want {
 			t.Errorf("repoFromAPIURL(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestNewClientNilLoggerDefaults(t *testing.T) {
+	// A nil logger must fall back to slog.Default, never be left nil.
+	c := NewClient(httpx.NewClient(time.Second), "tok", nil, nil)
+	if c.logger == nil {
+		t.Errorf("NewClient with nil logger left c.logger nil; want slog.Default fallback")
+	}
+}
+
+// jsonList renders n comma-joined JSON objects from itemFmt (a single %d
+// placeholder gets a per-item id), for building full-page pagination fixtures.
+func jsonList(itemFmt string, n, base int) string {
+	var b strings.Builder
+	for i := range n {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		fmt.Fprintf(&b, itemFmt, base+i)
+	}
+	return b.String()
+}
+
+// capPageHandler serves a full page (perPage items) for page numbers 1..maxPages
+// and a short page otherwise. A correct client fetches exactly maxPages pages;
+// a loop-bound mutation (page--, page<maxPages, or len<=perPage break) diverges
+// in the request count, and the out-of-range short page keeps a page-- mutant
+// from looping forever. wrap formats the envelope around the item list.
+func capPageHandler(requests *int, wrap func(items string) string, itemFmt string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		*requests++
+		w.Header().Set("Content-Type", "application/json")
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		if page >= 1 && page <= maxPages {
+			_, _ = w.Write([]byte(wrap(jsonList(itemFmt, perPage, page*1000))))
+			return
+		}
+		_, _ = w.Write([]byte(wrap("")))
+	}
+}
+
+func TestListReposStopsAtMaxPages(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(capPageHandler(&requests,
+		func(items string) string { return "[" + items + "]" },
+		`{"name":"r%d","owner":{"login":"cplieger"}}`))
+	defer srv.Close()
+
+	repos, err := newTestClient(t, srv).ListRepos(context.Background(), "cplieger")
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if requests != maxPages {
+		t.Errorf("made %d page requests, want %d (must fetch up to maxPages)", requests, maxPages)
+	}
+	if len(repos) != maxPages*perPage {
+		t.Errorf("got %d repos, want %d", len(repos), maxPages*perPage)
+	}
+}
+
+func TestListRunsStopsAtMaxPages(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(capPageHandler(&requests,
+		func(items string) string { return `{"workflow_runs":[` + items + `]}` },
+		`{"id":%d,"conclusion":"success","created_at":"2026-06-20T10:00:00Z"}`))
+	defer srv.Close()
+
+	runs, err := newTestClient(t, srv).ListRuns(context.Background(),
+		model.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if requests != maxPages {
+		t.Errorf("made %d page requests, want %d", requests, maxPages)
+	}
+	if len(runs) != maxPages*perPage {
+		t.Errorf("got %d runs, want %d", len(runs), maxPages*perPage)
+	}
+}
+
+func TestSearchStopsAtMaxPages(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(capPageHandler(&requests,
+		func(items string) string { return `{"items":[` + items + `]}` },
+		`{"number":%d,"repository_url":"https://api.github.com/repos/cplieger/a","user":{"login":"cplieger"}}`))
+	defer srv.Close()
+
+	prs, err := newTestClient(t, srv).SearchOpenPRs(context.Background(), "cplieger", "")
+	if err != nil {
+		t.Fatalf("SearchOpenPRs: %v", err)
+	}
+	if requests != maxPages {
+		t.Errorf("made %d page requests, want %d", requests, maxPages)
+	}
+	if len(prs) != maxPages*perPage {
+		t.Errorf("got %d PRs, want %d", len(prs), maxPages*perPage)
+	}
+}
+
+func TestListCodeScanningAlertsStopsAtMaxPages(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(capPageHandler(&requests,
+		func(items string) string { return "[" + items + "]" },
+		`{"number":%d,"rule":{"id":"go/x"},"tool":{"name":"CodeQL"}}`))
+	defer srv.Close()
+
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(),
+		model.Repo{Owner: "cplieger", Name: "a"})
+	if err != nil {
+		t.Fatalf("ListCodeScanningAlerts: %v", err)
+	}
+	if requests != maxPages {
+		t.Errorf("made %d page requests, want %d", requests, maxPages)
+	}
+	if len(alerts) != maxPages*perPage {
+		t.Errorf("got %d alerts, want %d", len(alerts), maxPages*perPage)
 	}
 }

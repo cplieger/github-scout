@@ -109,6 +109,19 @@ func TestScanEmitsAllFourSignals(t *testing.T) {
 			t.Errorf("msg %q emitted %d times, want 1", msg, rec.countMsg(msg))
 		}
 	}
+
+	// The "scan complete" summary must count the one item of each signal
+	// (pins the open_prs / open_issues counters).
+	if n, ok := rec.intAttr("scan complete", "open_prs"); !ok || n != 1 {
+		t.Errorf("open_prs = %d (found=%v), want 1", n, ok)
+	}
+	if n, ok := rec.intAttr("scan complete", "open_issues"); !ok || n != 1 {
+		t.Errorf("open_issues = %d (found=%v), want 1", n, ok)
+	}
+	// No run-list error occurred, so the partial-failure warning must not fire.
+	if n := rec.countMsg("partial failure listing runs"); n != 0 {
+		t.Errorf("successful run listing emitted %d partial-failure warnings, want 0", n)
+	}
 }
 
 func TestRunsDedupButSnapshotsRepeat(t *testing.T) {
@@ -189,6 +202,15 @@ func TestExcludeReposSkipsAllSignals(t *testing.T) {
 	if rec.countMsg("open issue") != 0 {
 		t.Errorf("noisy repo's issue should be filtered, got %d", rec.countMsg("open issue"))
 	}
+
+	// The per-repo loop counters surfaced in the summary: one repo scanned
+	// ("x"), one skipped ("noisy"). Pins the scanned++/skipped++ increments.
+	if n, ok := rec.intAttr("scan complete", "scanned"); !ok || n != 1 {
+		t.Errorf("scanned = %d (found=%v), want 1 (only the non-excluded repo)", n, ok)
+	}
+	if n, ok := rec.intAttr("scan complete", "skipped"); !ok || n != 1 {
+		t.Errorf("skipped = %d (found=%v), want 1 (the excluded repo)", n, ok)
+	}
 }
 
 func TestPruneDropsRunsOlderThanLookback(t *testing.T) {
@@ -229,6 +251,10 @@ func TestStatePersistsDedupAcrossProcesses(t *testing.T) {
 	if got := rec1.countMsg("workflow run"); got != 1 {
 		t.Fatalf("first trigger emitted %d workflow-run lines, want 1", got)
 	}
+	// A successful atomic save must not log the save-failure warning.
+	if got := rec1.countMsg("dedup state save failed"); got != 0 {
+		t.Errorf("successful state save emitted %d save-failure warnings, want 0", got)
+	}
 
 	c2, rec2 := mk() // fresh "process", same state file
 	c2.Scan(context.Background())
@@ -260,6 +286,61 @@ func TestStateCorruptStartsCold(t *testing.T) {
 	}
 	if _, ok := c.seen[9]; !ok {
 		t.Errorf("run 9 should be in the set after the cold scan")
+	}
+}
+
+func TestNewDefaultsNowToWallClock(t *testing.T) {
+	// New with no Now must fall back to time.Now, not leave the clock nil:
+	// a scan reads c.now() up front and would panic on a nil func.
+	fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "x"}}}
+	c := New(&Deps{
+		Client:   fc,
+		Logger:   slog.New(slog.NewTextHandler(testWriter{t}, nil)),
+		Owner:    "cplieger",
+		Lookback: 72 * time.Hour,
+	}) // Now intentionally omitted
+
+	if !c.Scan(context.Background()) {
+		t.Errorf("Scan with the default wall-clock now should be healthy")
+	}
+}
+
+func TestLastSlash(t *testing.T) {
+	tests := map[string]int{
+		"cplieger/github-scout": 8,
+		"a/b":                   1,
+		"/leading":              0,
+		"trailing/":             8,
+		"no-slash":              -1,
+		"":                      -1,
+	}
+	for in, want := range tests {
+		if got := lastSlash(in); got != want {
+			t.Errorf("lastSlash(%q) = %d, want %d", in, got, want)
+		}
+	}
+}
+
+func TestExcludedRepo(t *testing.T) {
+	c := &Collector{exclude: map[string]bool{"b": true, "noisy": true}}
+
+	// Excluded by the bare name after the last slash.
+	if !c.excludedRepo("owner/noisy") {
+		t.Errorf("excludedRepo(owner/noisy) = false, want true")
+	}
+	// Slash at index 1 still strips to the bare name "b" (pins i != -1,
+	// distinguishing it from an i != 1 mutant that would keep "a/b").
+	if !c.excludedRepo("a/b") {
+		t.Errorf("excludedRepo(a/b) = false, want true (bare name b excluded)")
+	}
+	// A non-excluded repo passes through.
+	if c.excludedRepo("owner/keep") {
+		t.Errorf("excludedRepo(owner/keep) = true, want false")
+	}
+	// A nil exclude set excludes nothing.
+	var none Collector
+	if none.excludedRepo("owner/anything") {
+		t.Errorf("excludedRepo with nil set = true, want false")
 	}
 }
 
