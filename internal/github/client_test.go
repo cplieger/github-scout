@@ -99,60 +99,91 @@ func TestListReposPaginates(t *testing.T) {
 	}
 }
 
-func TestListFailedRunsQueriesEachConclusion(t *testing.T) {
-	seenStatuses := map[string]bool{}
+func TestListRunsAllConclusions(t *testing.T) {
+	// One status=completed query returns runs of every conclusion; the
+	// client maps them all (no per-conclusion fan-out) and preserves each
+	// conclusion for the dashboard to filter and aggregate.
+	var queries int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		status := r.URL.Query().Get("status")
-		seenStatuses[status] = true
+		queries++
+		if got := r.URL.Query().Get("status"); got != "completed" {
+			t.Errorf("status = %q, want completed", got)
+		}
 		// The created filter must carry the >= operator (URL-decoded here).
 		if c := r.URL.Query().Get("created"); !strings.HasPrefix(c, ">=") {
 			t.Errorf("created filter = %q, want >= prefix", c)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"workflow_runs":[
-			{"id":1,"name":"CI","head_branch":"main","run_number":42,"event":"push","conclusion":"` + status + `","html_url":"https://github.com/cplieger/x/actions/runs/1","created_at":"2026-06-20T10:00:00Z"}
+			{"id":1,"name":"CI","head_branch":"main","run_number":42,"event":"push","conclusion":"success","html_url":"https://github.com/cplieger/x/actions/runs/1","created_at":"2026-06-20T10:00:00Z"},
+			{"id":2,"name":"CI","head_branch":"main","run_number":43,"event":"push","conclusion":"failure","html_url":"https://github.com/cplieger/x/actions/runs/2","created_at":"2026-06-20T11:00:00Z"},
+			{"id":3,"name":"Release","head_branch":"main","run_number":44,"event":"schedule","conclusion":"cancelled","html_url":"https://github.com/cplieger/x/actions/runs/3","created_at":"2026-06-20T12:00:00Z"}
 		]}`))
 	}))
 	defer srv.Close()
 
 	repo := model.Repo{Owner: "cplieger", Name: "x"}
-	runs, err := newTestClient(t, srv).ListFailedRuns(context.Background(), repo, time.Now().Add(-24*time.Hour))
+	runs, err := newTestClient(t, srv).ListRuns(context.Background(), repo, time.Now().Add(-24*time.Hour))
 	if err != nil {
-		t.Fatalf("ListFailedRuns: %v", err)
+		t.Fatalf("ListRuns: %v", err)
 	}
-	for _, c := range model.FailureConclusions {
-		if !seenStatuses[c] {
-			t.Errorf("conclusion %q was never queried", c)
+	if queries != 1 {
+		t.Errorf("made %d queries, want 1 (single status=completed call)", queries)
+	}
+	if len(runs) != 3 {
+		t.Fatalf("got %d runs, want 3 (all conclusions, not just failures)", len(runs))
+	}
+	byConclusion := map[string]model.WorkflowRun{}
+	for _, r := range runs {
+		byConclusion[r.Conclusion] = r
+	}
+	for _, c := range []string{"success", "failure", "cancelled"} {
+		if byConclusion[c].Repo != "cplieger/x" {
+			t.Errorf("conclusion %q missing or wrong repo: %+v", c, byConclusion[c])
 		}
 	}
-	if len(runs) != len(model.FailureConclusions) {
-		t.Errorf("got %d runs, want %d (one per conclusion)", len(runs), len(model.FailureConclusions))
-	}
-	if runs[0].Repo != "cplieger/x" || runs[0].RunNumber != 42 {
-		t.Errorf("run not parsed correctly: %+v", runs[0])
+	if byConclusion["failure"].RunNumber != 43 {
+		t.Errorf("failure run not parsed correctly: %+v", byConclusion["failure"])
 	}
 }
 
-func TestListFailedRunsPartialFailure(t *testing.T) {
-	// "failure" status returns valid data; the others return a 500. The
-	// client must surface an error AND keep the runs it did collect.
+func TestListRunsPaginates(t *testing.T) {
+	// A full first page (perPage runs) forces a second page fetch.
+	var full strings.Builder
+	full.WriteString(`{"workflow_runs":[`)
+	for i := range perPage {
+		if i > 0 {
+			full.WriteByte(',')
+		}
+		full.WriteString(`{"id":`)
+		full.WriteString(itoa(i + 1))
+		full.WriteString(`,"conclusion":"success","created_at":"2026-06-20T10:00:00Z"}`)
+	}
+	full.WriteString(`]}`)
+
+	var pagesSeen []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("status") == "failure" {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"workflow_runs":[{"id":7,"name":"CI","conclusion":"failure","created_at":"2026-06-20T10:00:00Z"}]}`))
+		page := r.URL.Query().Get("page")
+		pagesSeen = append(pagesSeen, page)
+		w.Header().Set("Content-Type", "application/json")
+		if page == "1" {
+			_, _ = w.Write([]byte(full.String()))
 			return
 		}
-		http.Error(w, "boom", http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"workflow_runs":[{"id":99999,"conclusion":"failure","created_at":"2026-06-20T10:00:00Z"}]}`))
 	}))
 	defer srv.Close()
 
 	repo := model.Repo{Owner: "cplieger", Name: "x"}
-	runs, err := newTestClient(t, srv).ListFailedRuns(context.Background(), repo, time.Now().Add(-1*time.Hour))
-	if err == nil {
-		t.Errorf("expected partial-failure error, got nil")
+	runs, err := newTestClient(t, srv).ListRuns(context.Background(), repo, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
 	}
-	if len(runs) != 1 || runs[0].RunID != 7 {
-		t.Errorf("expected to keep the 1 successful run, got %+v", runs)
+	if len(runs) != perPage+1 {
+		t.Errorf("got %d runs, want %d", len(runs), perPage+1)
+	}
+	if len(pagesSeen) < 2 || pagesSeen[0] != "1" || pagesSeen[1] != "2" {
+		t.Errorf("expected to fetch page 1 then 2, saw %v", pagesSeen)
 	}
 }
 
@@ -162,8 +193,8 @@ func TestUnsafeSegmentsRejected(t *testing.T) {
 		t.Errorf("ListRepos accepted unsafe owner")
 	}
 	bad := model.Repo{Owner: "ok", Name: "../evil"}
-	if _, err := c.ListFailedRuns(context.Background(), bad, time.Now()); err == nil {
-		t.Errorf("ListFailedRuns accepted unsafe repo name")
+	if _, err := c.ListRuns(context.Background(), bad, time.Now()); err == nil {
+		t.Errorf("ListRuns accepted unsafe repo name")
 	}
 }
 
@@ -258,21 +289,34 @@ func TestListCodeScanningAlerts(t *testing.T) {
 	}
 }
 
-func TestCodeScanningNotEnabledIsNotError(t *testing.T) {
-	// Repos without code scanning return 404/403 — the client maps these to
-	// an empty result, not an error, so a repo lacking CodeQL is silent.
-	for _, status := range []int{http.StatusNotFound, http.StatusForbidden} {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "no code scanning", status)
-		}))
-		alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
-		srv.Close()
-		if err != nil {
-			t.Errorf("status %d should be tolerated, got error: %v", status, err)
-		}
-		if len(alerts) != 0 {
-			t.Errorf("status %d should yield no alerts, got %d", status, len(alerts))
-		}
+func TestCodeScanning404IsNotError(t *testing.T) {
+	// A repo that never ran code scanning returns 404 — the client maps it
+	// to an empty result, not an error, so a repo lacking CodeQL is silent.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "no analysis found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	if err != nil {
+		t.Errorf("404 should be tolerated, got error: %v", err)
+	}
+	if len(alerts) != 0 {
+		t.Errorf("404 should yield no alerts, got %d", len(alerts))
+	}
+}
+
+func TestCodeScanning403IsError(t *testing.T) {
+	// A 403 is ambiguous — Advanced Security disabled, a missing token
+	// scope, or a rate limit. It MUST surface as an error rather than be
+	// silently mapped to "zero alerts", which would hide a security signal.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "Resource not accessible by personal access token", http.StatusForbidden)
+	}))
+	defer srv.Close()
+
+	if _, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"}); err == nil {
+		t.Errorf("403 must surface as an error (silent zero-alerts is a security false-negative)")
 	}
 }
 

@@ -23,3 +23,25 @@ func TestFailureConclusionsStable(t *testing.T) {
 		}
 	}
 }
+
+func TestIsFailureConclusion(t *testing.T) {
+	// Only the FailureConclusions set counts as a failure. success and
+	// cancelled/skipped/neutral (and the empty conclusion of an in-flight
+	// run that slipped through) must NOT count — they would dilute the
+	// failure rate and over-report new_failures.
+	cases := map[string]bool{
+		"failure":         true,
+		"timed_out":       true,
+		"startup_failure": true,
+		"success":         false,
+		"cancelled":       false,
+		"skipped":         false,
+		"neutral":         false,
+		"":                false,
+	}
+	for conclusion, want := range cases {
+		if got := IsFailureConclusion(conclusion); got != want {
+			t.Errorf("IsFailureConclusion(%q) = %v, want %v", conclusion, got, want)
+		}
+	}
+}

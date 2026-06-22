@@ -1,12 +1,12 @@
 {
   "title": "GitHub Scout",
   "uid": "github-scout",
-  "description": "Cross-repo GitHub work surfaced by github-scout: open pull requests, open issues, code-scanning alerts (current state), and failed Actions runs (recent events). Every row links straight to GitHub. No stats for stats sake — only things that need a look.",
+  "description": "Cross-repo GitHub work surfaced by github-scout: open pull requests, open issues, code-scanning alerts (current state), and Actions runs with a failure-rate trend (recent events). Every row links straight to GitHub. No stats for stats sake — only things that need a look.",
   "tags": ["github", "ci", "actions", "pull-requests", "issues", "security"],
   "timezone": "browser",
   "refresh": "5m",
   "schemaVersion": 42,
-  "version": 1,
+  "version": 2,
   "time": { "from": "now-7d", "to": "now" },
   "templating": {
     "list": [
@@ -21,12 +21,39 @@
         "name": "window",
         "type": "textbox",
         "label": "Snapshot window",
-        "description": "How far back to read the latest snapshot of open PRs / issues / alerts. Must be >= POLL_INTERVAL_MINUTES (github-scout default 15m): every open item is re-emitted each scan, and this window captures the most recent one. The time picker only affects the failed-runs panels.",
+        "description": "How far back to read the latest snapshot of open PRs / issues / alerts. Must be >= SCAN_INTERVAL (github-scout default 15m): every open item is re-emitted each scan, and this window captures the most recent one. The time picker only affects the Actions-runs panels.",
         "query": "20m",
         "current": { "selected": true, "text": "20m", "value": "20m" },
         "options": [ { "selected": true, "text": "20m", "value": "20m" } ],
         "hide": 2,
         "skipUrlSync": false
+      },
+      {
+        "name": "conclusion",
+        "type": "custom",
+        "label": "Conclusion",
+        "description": "Which run conclusions the Actions runs table shows. Defaults to the failure set (failure / timed_out / startup_failure); pick All or success to see everything. Only affects the Actions runs table — the failure-rate panels always use the full set.",
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".+",
+        "query": "failure,timed_out,startup_failure,success,cancelled,skipped,neutral,action_required",
+        "current": {
+          "selected": true,
+          "text": ["failure", "timed_out", "startup_failure"],
+          "value": ["failure", "timed_out", "startup_failure"]
+        },
+        "options": [
+          { "selected": false, "text": "All", "value": "$__all" },
+          { "selected": true, "text": "failure", "value": "failure" },
+          { "selected": true, "text": "timed_out", "value": "timed_out" },
+          { "selected": true, "text": "startup_failure", "value": "startup_failure" },
+          { "selected": false, "text": "success", "value": "success" },
+          { "selected": false, "text": "cancelled", "value": "cancelled" },
+          { "selected": false, "text": "skipped", "value": "skipped" },
+          { "selected": false, "text": "neutral", "value": "neutral" },
+          { "selected": false, "text": "action_required", "value": "action_required" }
+        ],
+        "hide": 0
       }
     ]
   },
@@ -146,7 +173,7 @@
     {
       "id": 13,
       "title": "Failed Runs (range)",
-      "description": "Distinct failed / timed-out / startup-failed Actions runs in the selected time range, deduplicated by run ID. Unlike the other tiles, this one follows the time picker.",
+      "description": "Distinct failed / timed-out / startup-failed Actions runs in the selected time range, deduplicated by run ID and filtered from the all-runs stream by conclusion. Unlike the other tiles, this one follows the time picker.",
       "type": "stat",
       "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
@@ -173,7 +200,7 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "count(count by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range])))",
+          "expr": "count(count by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__range])))",
           "queryType": "instant"
         }
       ]
@@ -329,17 +356,98 @@
     },
     {
       "id": 3,
-      "title": "Failed Actions runs \u2014 selected time range",
+      "title": "Actions runs \u2014 selected time range",
       "type": "row",
       "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
       "collapsed": false
     },
     {
+      "id": 31,
+      "title": "Failure Rate (range)",
+      "description": "Share of completed Actions runs that failed in the selected time range: failed / (failed + succeeded), deduplicated by run ID. Cancelled and skipped runs are excluded (not pass/fail outcomes). A rising rate means CI health is degrading. Shows \u2014 when no runs completed in range.",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 33 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "decimals": 1,
+          "noValue": "\u2014",
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 10 },
+            { "color": "red", "value": 30 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "(count(count by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__range]))) or vector(0)) / count(count by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure|success` [$__range]))) * 100",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 32,
+      "title": "Failure rate over time",
+      "description": "Percentage of completed runs that failed, bucketed over the selected range: failed / (failed + succeeded) per bucket (cancelled/skipped excluded). The trend is the signal — a sustained climb means something is breaking more often.",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 18, "x": 6, "y": 33 },
+      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "spanNulls": true,
+            "pointSize": 5,
+            "showPoints": "auto"
+          },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null },
+            { "color": "yellow", "value": 10 },
+            { "color": "red", "value": 30 }
+          ]}
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "expr": "(sum(count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__interval])) or vector(0)) / sum(count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure|success` [$__interval])) * 100",
+          "legendFormat": "failure rate",
+          "queryType": "range"
+        }
+      ]
+    },
+    {
       "id": 30,
-      "title": "Failed Runs \u2014 click Link to investigate",
-      "description": "Every failed / timed-out / startup-failed Actions run across all repos in the selected time range (deduplicated by run ID, newest first). github-scout looks back LOOKBACK_HOURS (default 72h), so set the picker accordingly.",
+      "title": "Actions runs \u2014 click Link to investigate",
+      "description": "Every completed Actions run across all repos in the selected time range, deduplicated by run ID, newest first. Filter with the Conclusion variable (top of dashboard) \u2014 it defaults to the failure set, so this opens on failed runs; switch to All or success to see everything. github-scout looks back LOOKBACK_HOURS (default 72h), so set the picker accordingly.",
       "type": "table",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 33 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 39 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": { "custom": { "filterable": true } },
@@ -351,7 +459,12 @@
               { "id": "mappings", "value": [ { "type": "value", "options": {
                 "failure": { "color": "red", "index": 0 },
                 "timed_out": { "color": "orange", "index": 1 },
-                "startup_failure": { "color": "dark-red", "index": 2 }
+                "startup_failure": { "color": "dark-red", "index": 2 },
+                "success": { "color": "green", "index": 3 },
+                "cancelled": { "color": "text", "index": 4 },
+                "skipped": { "color": "text", "index": 5 },
+                "neutral": { "color": "blue", "index": 6 },
+                "action_required": { "color": "yellow", "index": 7 }
               } } ] }
             ]
           },
@@ -366,7 +479,7 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "count by (repo, workflow, conclusion, branch, event, run_number, run_id, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run failed` [$__range]))",
+          "expr": "count by (repo, workflow, conclusion, branch, event, run_number, run_id, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`${conclusion:pipe}` [$__range]))",
           "queryType": "instant"
         }
       ],
@@ -392,7 +505,7 @@
       "id": 4,
       "title": "Scout health",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 },
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 49 },
       "collapsed": false
     },
     {
@@ -400,7 +513,7 @@
       "title": "Scout Status",
       "description": "Whether github-scout completed a scan in the last hour. STALLED means the poller is wedged or the container is down \u2014 investigate it, because every panel above goes stale and silently reads empty.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 44 },
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 50 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
@@ -438,7 +551,7 @@
       "title": "Scan Errors (last 1h)",
       "description": "github-scout's own failures (repo discovery failed \u2014 bad token, rate limit, owner typo) in the last hour. Non-zero means the scout itself is broken, not a watched repo. Tolerated per-repo warnings are not counted.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 44 },
+      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 50 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {
@@ -472,7 +585,7 @@
       "title": "Repos Scanned (last scan)",
       "description": "How many repos the most recent scan covered. A sudden drop toward zero means discovery is partially failing even if the scout still reports RUNNING.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 44 },
+      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 50 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
       "fieldConfig": {
         "defaults": {

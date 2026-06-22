@@ -10,8 +10,8 @@
 
 One cross-repo view of everything that needs a look across your GitHub repos —
 open pull requests, open issues, code-scanning alerts, and failed Actions runs
-— shipped to Loki, rendered by a ready-made Grafana dashboard, with a
-click-through link on every row.
+(with a failure-rate trend) — shipped to Loki, rendered by a ready-made Grafana
+dashboard, with a click-through link on every row.
 
 ## The problem
 
@@ -44,8 +44,8 @@ log collector) and the bundled dashboard gives you:
   auto-generated trackers filtered out by default);
 - **Code-scanning alerts** — every open CodeQL / code-scanning alert, colour-
   coded by severity;
-- **Failed Actions runs** — every build, release, or scheduled job that failed,
-  timed out, or failed to start;
+- **Actions runs** — every completed run; the failed ones (failure, timed out,
+  or startup failure) are the headline, with a failure-rate trend over time;
 - a **scout-health row** (status, scan errors, repos scanned) so you know the
   watcher itself is alive.
 
@@ -57,7 +57,7 @@ with zero configuration changes.
 
 ### Logs, not metrics
 
-A failed run is an **event** carrying rich, high-cardinality detail: a unique
+A workflow run is an **event** carrying rich, high-cardinality detail: a unique
 run ID and URL, a workflow name, a branch, a trigger. An open PR, issue, or
 alert is likewise an **item** with a title, author, and link. That is log-shaped
 data, not a numeric time-series. Modelling it as a Prometheus metric forces a
@@ -76,11 +76,13 @@ The guiding principle: surface **actionable items**, not stats for stats' sake.
 
 The four signals split into two shapes:
 
-- **Event-once** (failed Actions runs). A failure happens at a point in time, so
-  each run ID is emitted **exactly once** per process lifetime. A plain log count
-  therefore equals the number of distinct failures, with no deduplication
-  gymnastics in the dashboard. The dedup set is an in-memory map of run ID →
-  creation time, pruned to the lookback window so memory stays bounded.
+- **Event-once** (Actions runs). A completed run happens at a point in time, so
+  each run ID is emitted **exactly once** per process lifetime, as
+  `msg="workflow run"` carrying its `conclusion`. A plain log count therefore
+  equals the number of distinct runs; the dashboard filters by conclusion for
+  the failures view and derives the failure rate from the same stream. The dedup
+  set is an in-memory map of run ID → creation time, pruned to the lookback
+  window so memory stays bounded.
 - **Snapshot** (open PRs, open issues, code-scanning alerts). These are current
   _state_: an item stays open across scans, so github-scout re-emits the full
   current set **every scan**. When an item is closed / merged / fixed it simply
@@ -90,10 +92,10 @@ The four signals split into two shapes:
 
 github-scout is **stateless** — there is no database and no on-disk state. The
 only cross-scan state is the event-once dedup set, which lives in memory;
-history lives in Loki. A consequence: a process restart can re-log failures
-still inside the lookback window. The dashboard's count tiles deduplicate by run
-ID so counts stay correct. Given failures are infrequent and restarts rarer,
-this is a deliberate simplicity-for-robustness trade.
+history lives in Loki. A consequence: a process restart can re-log runs still
+inside the lookback window. The dashboard's count tiles deduplicate by run ID so
+counts stay correct. Given the runs inside the window are bounded and restarts
+are rare, this is a deliberate simplicity-for-robustness trade.
 
 ### Architecture
 
@@ -134,7 +136,7 @@ services:
       TZ: "Europe/Paris"
       GITHUB_OWNER: "your-login"        # user or org whose repos to scan
       GITHUB_TOKEN: "ghp_xxx"            # see token scopes below
-      POLL_INTERVAL_MINUTES: "15"        # 0 = scan once then idle
+      SCAN_INTERVAL: "15m"               # Go duration between scans; "off" = resident-idle
       LOOKBACK_HOURS: "72"               # how far back to consider failed runs
       EXCLUDE_REPOS: ""                  # comma-separated bare repo names to skip
       LOG_LEVEL: "info"
@@ -178,15 +180,34 @@ header and is never logged (only its presence is logged at startup).
 | ----------------------- | --------------------------------------------------------------------------- | -------------- | -------- |
 | `GITHUB_OWNER`          | GitHub login (user or org) whose repositories are scanned                   | ``             | Yes      |
 | `GITHUB_TOKEN`          | Personal access token (see scopes above)                                    | ``             | Yes      |
-| `POLL_INTERVAL_MINUTES` | Minutes between scans. `0` scans once then idles (useful for debugging)     | `15`           | No       |
+| `SCAN_INTERVAL`         | Gap between scans, a Go duration (`15m`, `1h`). `off` = resident-idle       | `15m`          | No       |
 | `LOOKBACK_HOURS`        | How far back each scan considers failed runs (also bounds the dedup set)    | `72`           | No       |
 | `EXCLUDE_REPOS`         | Comma-separated **bare** repo names to skip (silences all signals)          | ``             | No       |
 | `LOG_LEVEL`             | `debug`, `info`, `warn`, `error`                                            | `info`         | No       |
 | `TZ`                    | Container timezone                                                          | `Europe/Paris` | No       |
 
-Out-of-range values are clamped (e.g. a poll interval beyond one year), and
-invalid integers fall back to the default, so misconfiguration degrades safely
-rather than crashing.
+Out-of-range or unparseable values fall back to the default (a bad
+`SCAN_INTERVAL` keeps scanning at 15m; an out-of-range `LOOKBACK_HOURS` is
+clamped), so misconfiguration degrades safely rather than crashing.
+
+### Run modes
+
+github-scout matches the fleet's scheduled-app convention — an internal timer
+or an external scheduler, your choice:
+
+- **Scheduled** (`SCAN_INTERVAL=15m`, the default): an internal jittered timer
+  drives the scans. Failed runs are deduplicated in memory and emitted once.
+- **Resident-idle** (`SCAN_INTERVAL=off`): no internal timer. The container
+  sits healthy and idle while an external scheduler runs `github-scout trigger`
+  on its own cadence — e.g. an Ofelia `job-exec`, like the rest of the fleet.
+- **Trigger** (`github-scout trigger`): one scan, then exit 0/1 — the target
+  for that external scheduler, or a manual one-shot run.
+
+Each `trigger` is an independent process, so it does not share the resident
+timer's in-memory failed-run dedup set: failures still inside the lookback
+window are re-emitted on each trigger. The dashboard deduplicates by run ID, so
+counts stay correct — consistent with the snapshot signals (PRs / issues /
+alerts), which re-emit the full open set every scan anyway.
 
 Two optional noise filters take raw GitHub search qualifiers, appended to the
 cross-repo PR/issue searches:
@@ -204,7 +225,7 @@ github-scout writes JSON to stdout, one line per item. A failed run looks like:
 {
   "time": "2026-06-21T12:00:03Z",
   "level": "INFO",
-  "msg": "workflow run failed",
+  "msg": "workflow run",
   "repo": "cplieger/vibekit",
   "workflow": "CI",
   "conclusion": "failure",
@@ -220,23 +241,27 @@ github-scout writes JSON to stdout, one line per item. A failed run looks like:
 Each signal has a stable `msg` the dashboard and any Loki ruler alert filter on.
 Every line also carries `repo`, `url`, and `created_at`:
 
-- `workflow run failed` (event-once) — `workflow`, `conclusion`, `branch`, `event`, `run_number`, `run_id`
+- `workflow run` (event-once) — `workflow`, `conclusion`, `branch`, `event`, `run_number`, `run_id`
 - `open pull request` (snapshot) — `number`, `title`, `author`, `draft`
 - `open issue` (snapshot) — `number`, `title`, `author`, `labels`
 - `code scanning alert` (snapshot) — `number`, `rule`, `severity`, `tool`
 
-The failed-run `conclusion` is one of `failure`, `timed_out`, or
-`startup_failure`. Each scan also logs a `scan complete` summary line
-(`scanned`, `skipped`, `open_prs`, `open_issues`, `code_alerts`, `new_failures`,
-`tracked`, `duration`); a repo-discovery failure logs at `error` level.
+The `conclusion` is any completed-run outcome — `success`, `failure`,
+`timed_out`, `startup_failure`, `cancelled`, `skipped`, or `neutral`; the
+dashboard treats `failure` / `timed_out` / `startup_failure` as the failure set
+(for the failed-run count and the failure-rate panels). Each scan also logs a
+`scan complete` summary line (`scanned`, `skipped`, `open_prs`, `open_issues`,
+`code_alerts`, `new_runs`, `new_failures`, `tracked`, `duration`); a
+repo-discovery failure logs at `error` level.
 
 ## Grafana integration
 
 Ship the container's stdout to Loki — Grafana Alloy's Docker log discovery does
 this with no extra configuration — and import `grafana-dashboard.json`. The
 dashboard uses a standard Loki datasource (no plugins) and is organised into
-"open work" (PRs, issues, alerts — current state) and "failed runs" (recent
-events), each with count tiles and a linked table. Every query is built on:
+"open work" (PRs, issues, alerts — current state) and "Actions runs" (recent
+events — a failure-rate trend plus a conclusion-filtered run table), each with
+count tiles and a linked table. Every query is built on:
 
 ```logql
 {container="github-scout"} | json | msg=`open pull request`
@@ -297,10 +322,11 @@ go test ./internal/github -run=x -fuzz=FuzzDecodeRunsPage -fuzztime=30s  # fuzz 
 golangci-lint run ./...                     # lint (config synced from cplieger/ci)
 ```
 
-To run it locally against your account, export a token and use one-shot mode:
+To run it locally against your account, export a token and use the `trigger`
+subcommand (one scan, then exit):
 
 ```bash
-GITHUB_TOKEN=ghp_xxx GITHUB_OWNER=your-login POLL_INTERVAL_MINUTES=0 LOG_LEVEL=debug go run .
+GITHUB_TOKEN=ghp_xxx GITHUB_OWNER=your-login LOG_LEVEL=debug go run . trigger
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture map, the extension

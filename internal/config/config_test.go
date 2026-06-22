@@ -10,14 +10,14 @@ func TestLoadDefaults(t *testing.T) {
 	// No env set → defaults. t.Setenv guarantees a clean, restored env.
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GITHUB_OWNER", "")
-	t.Setenv("POLL_INTERVAL_MINUTES", "")
+	t.Setenv("SCAN_INTERVAL", "")
 	t.Setenv("LOOKBACK_HOURS", "")
 	t.Setenv("EXCLUDE_REPOS", "")
 	t.Setenv("LOG_LEVEL", "")
 
 	cfg := Load()
-	if cfg.PollInterval != DefaultPollMinutes*time.Minute {
-		t.Errorf("PollInterval = %v, want %v", cfg.PollInterval, DefaultPollMinutes*time.Minute)
+	if cfg.ScanInterval != DefaultScanInterval {
+		t.Errorf("ScanInterval = %v, want %v", cfg.ScanInterval, DefaultScanInterval)
 	}
 	if cfg.Lookback != DefaultLookbackHours*time.Hour {
 		t.Errorf("Lookback = %v, want %v", cfg.Lookback, DefaultLookbackHours*time.Hour)
@@ -33,7 +33,7 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadParsesValues(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "ghp_secret")
 	t.Setenv("GITHUB_OWNER", "cplieger")
-	t.Setenv("POLL_INTERVAL_MINUTES", "30")
+	t.Setenv("SCAN_INTERVAL", "30m")
 	t.Setenv("LOOKBACK_HOURS", "48")
 	t.Setenv("EXCLUDE_REPOS", "noisy-repo, other ,")
 	t.Setenv("LOG_LEVEL", "debug")
@@ -45,8 +45,8 @@ func TestLoadParsesValues(t *testing.T) {
 	if cfg.Owner != "cplieger" {
 		t.Errorf("Owner = %q, want cplieger", cfg.Owner)
 	}
-	if cfg.PollInterval != 30*time.Minute {
-		t.Errorf("PollInterval = %v, want 30m", cfg.PollInterval)
+	if cfg.ScanInterval != 30*time.Minute {
+		t.Errorf("ScanInterval = %v, want 30m", cfg.ScanInterval)
 	}
 	if cfg.Lookback != 48*time.Hour {
 		t.Errorf("Lookback = %v, want 48h", cfg.Lookback)
@@ -62,10 +62,21 @@ func TestLoadParsesValues(t *testing.T) {
 	}
 }
 
-func TestPollIntervalZeroIsOneShot(t *testing.T) {
-	t.Setenv("POLL_INTERVAL_MINUTES", "0")
-	if got := Load().PollInterval; got != 0 {
-		t.Errorf("PollInterval = %v, want 0 (one-shot)", got)
+func TestScanIntervalSentinelsAreResidentIdle(t *testing.T) {
+	for _, v := range []string{"off", "disabled", "0", "0s", "OFF"} {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("SCAN_INTERVAL", v)
+			if got := Load().ScanInterval; got != 0 {
+				t.Errorf("SCAN_INTERVAL=%q ScanInterval = %v, want 0 (resident-idle)", v, got)
+			}
+		})
+	}
+}
+
+func TestScanIntervalParsesDuration(t *testing.T) {
+	t.Setenv("SCAN_INTERVAL", "1h30m")
+	if got := Load().ScanInterval; got != 90*time.Minute {
+		t.Errorf("ScanInterval = %v, want 1h30m", got)
 	}
 }
 
@@ -77,9 +88,9 @@ func TestClampingAndFallbacks(t *testing.T) {
 		val      string
 		want     time.Duration
 	}{
-		{name: "poll negative falls back to default", key: "POLL_INTERVAL_MINUTES", val: "-5", want: DefaultPollMinutes * time.Minute, selector: func(c Config) time.Duration { return c.PollInterval }},
-		{name: "poll garbage falls back to default", key: "POLL_INTERVAL_MINUTES", val: "abc", want: DefaultPollMinutes * time.Minute, selector: func(c Config) time.Duration { return c.PollInterval }},
-		{name: "poll over max is clamped", key: "POLL_INTERVAL_MINUTES", val: "999999999", want: maxPollMinutes * time.Minute, selector: func(c Config) time.Duration { return c.PollInterval }},
+		{name: "scan negative falls back to default", key: "SCAN_INTERVAL", val: "-5m", want: DefaultScanInterval, selector: func(c Config) time.Duration { return c.ScanInterval }},
+		{name: "scan garbage falls back to default", key: "SCAN_INTERVAL", val: "abc", want: DefaultScanInterval, selector: func(c Config) time.Duration { return c.ScanInterval }},
+		{name: "scan over max is clamped", key: "SCAN_INTERVAL", val: "10000h", want: maxScanInterval, selector: func(c Config) time.Duration { return c.ScanInterval }},
 		{name: "lookback zero floors to lo=1", key: "LOOKBACK_HOURS", val: "0", want: 1 * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
 		{name: "lookback negative falls back to default", key: "LOOKBACK_HOURS", val: "-1", want: DefaultLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
 		{name: "lookback over max is clamped", key: "LOOKBACK_HOURS", val: "100000", want: maxLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},

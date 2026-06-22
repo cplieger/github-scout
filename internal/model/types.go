@@ -7,9 +7,12 @@
 //
 // Two emission models are used (see internal/collect):
 //
-//   - Event-once: FailedRun. A failure happens once; github-scout emits
-//     each run ID a single time so a plain log count equals the number of
-//     distinct failures.
+//   - Event-once: WorkflowRun. A completed run happens once; github-scout
+//     emits each run ID a single time so a plain log count equals the
+//     number of distinct runs. The Conclusion field (success / failure /
+//     timed_out / startup_failure / cancelled / skipped / neutral) lets the
+//     dashboard filter failures out of the all-runs stream and compute a
+//     failure rate without a separate query per conclusion.
 //   - Snapshot: PullRequest, Issue, CodeScanningAlert. These are current
 //     STATE (an item stays open across scans), so github-scout emits the
 //     full current set every scan. When an item is closed/merged/fixed it
@@ -17,7 +20,10 @@
 //     the most recent snapshot as "what is open right now".
 package model
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // Repo is a GitHub repository discovered for an owner. Only the fields
 // github-scout needs to scope follow-up API calls and to decide whether a
@@ -39,10 +45,14 @@ type Repo struct {
 // FullName returns the canonical "owner/name" identifier.
 func (r Repo) FullName() string { return r.Owner + "/" + r.Name }
 
-// FailedRun is a single failed (or timed-out / startup-failed) GitHub
-// Actions workflow run — the event-once signal. Each is a build / release /
-// scheduled job that needs a human to look at it.
-type FailedRun struct {
+// WorkflowRun is a single completed GitHub Actions workflow run — the
+// event-once signal. github-scout emits every completed run once,
+// whatever its conclusion, so a plain log count equals the number of
+// distinct runs and the Conclusion field drives both the actionable
+// failures view (Conclusion in FailureConclusions) and the failure-rate
+// panel. Each failed run is a build / release / scheduled job that needs a
+// human to look at it.
+type WorkflowRun struct {
 	CreatedAt  time.Time `json:"created_at"`
 	Repo       string    `json:"repo"`
 	Workflow   string    `json:"workflow"`
@@ -97,8 +107,19 @@ type CodeScanningAlert struct {
 }
 
 // FailureConclusions is the set of run conclusions github-scout treats as
-// actionable failures. success/neutral/skipped/cancelled are excluded: a
-// cancelled run is usually a human superseding it. The Actions API accepts
-// each as a `status` query value, so the collector issues one query per
-// conclusion. Ordering is stable for deterministic logs and tests.
+// actionable failures. It classifies a WorkflowRun's Conclusion: the
+// collector counts these as failures in its scan summary, and the
+// dashboard filters the all-runs stream by them for the failures view and
+// uses them as the numerator of the failure-rate panel (with success the
+// rest of the denominator). success/neutral/skipped/cancelled are not
+// failures — a cancelled run is usually a human superseding it. Ordering
+// is stable for deterministic logs and tests.
 var FailureConclusions = []string{"failure", "timed_out", "startup_failure"}
+
+// IsFailureConclusion reports whether conclusion is one github-scout treats
+// as an actionable failure (i.e. is in FailureConclusions). It is the
+// single definition of "failed" shared by the collector's summary counts
+// and any caller classifying a WorkflowRun.
+func IsFailureConclusion(conclusion string) bool {
+	return slices.Contains(FailureConclusions, conclusion)
+}

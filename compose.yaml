@@ -8,9 +8,9 @@ services:
     environment:
       TZ: "Europe/Paris"
       GITHUB_OWNER: ""  # GitHub login (user or org) whose repos are scanned
-      GITHUB_TOKEN: ""  # PAT with repo + actions:read scope (private repos need repo scope)
-      POLL_INTERVAL_MINUTES: "15"  # 0 = scan once then idle
-      LOOKBACK_HOURS: "72"  # how far back to consider failures
+      GITHUB_TOKEN: ""  # PAT: classic `repo` (or `public_repo`); fine-grained = Actions/PRs/Issues/Code scanning alerts read
+      SCAN_INTERVAL: "15m"  # Go duration between scans; "off" = resident-idle (external trigger)
+      LOOKBACK_HOURS: "72"  # how far back to consider failed runs
       EXCLUDE_REPOS: ""  # comma-separated bare repo names to skip
       LOG_LEVEL: "info"
 
