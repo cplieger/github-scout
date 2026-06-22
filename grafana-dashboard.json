@@ -6,7 +6,7 @@
   "timezone": "browser",
   "refresh": "5m",
   "schemaVersion": 42,
-  "version": 4,
+  "version": 5,
   "time": { "from": "now-48h", "to": "now" },
   "templating": {
     "list": [
@@ -15,7 +15,7 @@
         "type": "datasource",
         "query": "loki",
         "current": { "text": "Loki", "value": "loki" },
-        "hide": 2
+        "hide": 0
       },
       {
         "name": "window",
