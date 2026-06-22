@@ -5,17 +5,19 @@
 //
 // Two emission models (see internal/model):
 //
-//   - Event-once (failed Actions runs): each run ID is emitted a single
-//     time, so a plain LogQL count equals the number of distinct failures.
-//     The dedup set is in-memory, pruned to the lookback window.
+//   - Event-once (Actions runs): each completed run ID is emitted a single
+//     time as msg="workflow run" with its conclusion, so a plain LogQL
+//     count equals the number of distinct runs and the dashboard filters
+//     that stream for failures and computes the failure rate. The dedup set
+//     is in-memory, pruned to the lookback window.
 //   - Snapshot (open PRs, open issues, code-scanning alerts): the full
 //     current set is emitted every scan. A closed/merged/fixed item simply
 //     stops appearing in later snapshots, so the dashboard reads the most
 //     recent scan as "what is open right now" — no dedup state needed.
 //
-// github-scout is stateless: the only cross-scan state is the failed-run
-// dedup set, and a restart at worst re-emits failures still inside the
-// lookback window (the dashboard dedups failure counts by run_id).
+// github-scout is stateless: the only cross-scan state is the run dedup
+// set, and a restart at worst re-emits runs still inside the lookback
+// window (the dashboard dedups run counts by run_id).
 package collect
 
 import (
@@ -32,7 +34,7 @@ type Collector struct {
 	client       apiClient
 	logger       *slog.Logger
 	now          func() time.Time
-	seen         map[int64]time.Time // failed-run RunID -> CreatedAt, pruned to lookback
+	seen         map[int64]time.Time // run RunID -> CreatedAt, pruned to lookback
 	exclude      map[string]bool     // bare repo names to skip across all signals
 	owner        string
 	prExclude    string // raw search qualifiers to filter PR noise (e.g. Renovate)
@@ -44,7 +46,7 @@ type Collector struct {
 // needs. *github.Client satisfies it in production; tests pass a fake.
 type apiClient interface {
 	ListRepos(ctx context.Context, owner string) ([]model.Repo, error)
-	ListFailedRuns(ctx context.Context, repo model.Repo, since time.Time) ([]model.FailedRun, error)
+	ListRuns(ctx context.Context, repo model.Repo, since time.Time) ([]model.WorkflowRun, error)
 	SearchOpenPRs(ctx context.Context, owner, exclude string) ([]model.PullRequest, error)
 	SearchOpenIssues(ctx context.Context, owner, exclude string) ([]model.Issue, error)
 	ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([]model.CodeScanningAlert, error)
@@ -106,7 +108,7 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 	openPRs := c.collectPRs(ctx)
 	openIssues := c.collectIssues(ctx)
 
-	scanned, skipped, newFailures, alerts := 0, 0, 0, 0
+	scanned, skipped, newRuns, newFailures, alerts := 0, 0, 0, 0, 0
 	for i := range repos {
 		repo := &repos[i]
 		if c.exclude[repo.Name] {
@@ -114,7 +116,9 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 			continue
 		}
 		scanned++
-		newFailures += c.collectFailedRuns(ctx, repo, cutoff)
+		runs, failures := c.collectRuns(ctx, repo, cutoff)
+		newRuns += runs
+		newFailures += failures
 		alerts += c.collectAlerts(ctx, repo)
 	}
 
@@ -122,7 +126,7 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 	c.logger.Info("scan complete",
 		"scanned", scanned, "skipped", skipped,
 		"open_prs", openPRs, "open_issues", openIssues,
-		"code_alerts", alerts, "new_failures", newFailures,
+		"code_alerts", alerts, "new_runs", newRuns, "new_failures", newFailures,
 		"tracked", len(c.seen),
 		"duration", c.now().Sub(start).Round(time.Millisecond))
 	return true
@@ -174,28 +178,33 @@ func (c *Collector) collectIssues(ctx context.Context) int {
 	return n
 }
 
-// collectFailedRuns emits newly-seen failed runs for repo (event-once) and
-// returns how many were new this scan.
-func (c *Collector) collectFailedRuns(ctx context.Context, repo *model.Repo, cutoff time.Time) int {
-	runs, err := c.client.ListFailedRuns(ctx, *repo, cutoff)
+// collectRuns emits newly-seen completed runs for repo (event-once) and
+// returns how many runs were new this scan and how many of those were
+// failures. Every completed run is emitted once as msg="workflow run" with
+// its conclusion, so the dashboard filters that one stream for the failures
+// view and computes the failure rate — no per-conclusion fan-out needed.
+func (c *Collector) collectRuns(ctx context.Context, repo *model.Repo, cutoff time.Time) (newRuns, newFailures int) {
+	runs, err := c.client.ListRuns(ctx, *repo, cutoff)
 	if err != nil {
 		c.logger.Warn("partial failure listing runs", "repo", repo.FullName(), "error", err)
 	}
-	n := 0
 	for i := range runs {
 		run := &runs[i]
 		if _, ok := c.seen[run.RunID]; ok {
 			continue
 		}
 		c.seen[run.RunID] = run.CreatedAt
-		c.logger.Info("workflow run failed",
+		c.logger.Info("workflow run",
 			"repo", run.Repo, "workflow", run.Workflow, "conclusion", run.Conclusion,
 			"branch", run.Branch, "event", run.Event, "run_number", run.RunNumber,
 			"run_id", run.RunID, "url", run.URL,
 			"created_at", run.CreatedAt.UTC().Format(time.RFC3339))
-		n++
+		newRuns++
+		if model.IsFailureConclusion(run.Conclusion) {
+			newFailures++
+		}
 	}
-	return n
+	return newRuns, newFailures
 }
 
 // collectAlerts emits the current code-scanning-alert snapshot for repo and
@@ -240,7 +249,7 @@ func lastSlash(s string) int {
 	return -1
 }
 
-// prune drops failed-run dedup entries older than cutoff. The Actions query
+// prune drops run dedup entries older than cutoff. The Actions query
 // already filters to runs at or after cutoff, so older entries can never
 // recur and are safe to forget — bounding the map to the lookback window.
 func (c *Collector) prune(cutoff time.Time) {

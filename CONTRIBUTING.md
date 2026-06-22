@@ -39,17 +39,18 @@ lives under `internal/`:
 - `internal/config` — env-var loading, clamping, and validation (`Load`).
 - `internal/github` — the GitHub REST client: `ListRepos` (via
   `/user/repos?affiliation=owner`, so private repos are included),
-  `ListFailedRuns` (one paginated query per failure conclusion),
+  `ListRuns` (one paginated `status=completed` query covering all conclusions),
   `SearchOpenPRs` / `SearchOpenIssues` (one cross-repo `/search/issues` query
-  each), and `ListCodeScanningAlerts` (per-repo, tolerating the 403/404 a repo
-  without code scanning returns). Auth headers, body caps, and page-count
-  pagination live here.
+  each), and `ListCodeScanningAlerts` (per-repo; a 404 means no analyses and is
+  skipped silently, while a 403 — Advanced Security off, missing token scope, or
+  rate limit — is surfaced rather than silently read as zero alerts). Auth
+  headers, body caps, and page-count pagination live here.
 - `internal/collect` — the scan orchestrator: discover repos → collect the four
   signals → emit. It depends on a small consumer-side `apiClient` **interface**
   (not the concrete client), which is the seam that lets the orchestration logic
   be unit-tested with a scripted fake while the HTTP client is tested separately
   against an `httptest` server.
-- `internal/model` — domain types (`Repo`, `FailedRun`, `PullRequest`, `Issue`,
+- `internal/model` — domain types (`Repo`, `WorkflowRun`, `PullRequest`, `Issue`,
   `CodeScanningAlert`). Their JSON tags are the Loki field names the dashboard
   queries, so treat them as a contract — renaming a tag breaks dashboard panels.
 - `internal/urlsafe` — URL path-segment validation, applied to every owner/repo
@@ -82,15 +83,15 @@ upstream, not in this repo; a local copy would be overwritten by the next sync.
 
 ## Running it locally
 
-Use one-shot mode (`POLL_INTERVAL_MINUTES=0`) with a token so you scan once and
-exit instead of looping:
+Use the `trigger` subcommand with a token so you scan once and exit instead of
+looping (this is also how an external scheduler drives it — see the README's
+"Run modes"):
 
 ```bash
 GITHUB_TOKEN=ghp_xxx \
 GITHUB_OWNER=your-login \
-POLL_INTERVAL_MINUTES=0 \
 LOG_LEVEL=debug \
-go run .
+go run . trigger
 ```
 
 A read-only fine-grained token works well: Repository access = All

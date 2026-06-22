@@ -8,9 +8,15 @@ package main
 // enumerate "all workflows across all repos" and has no cross-repo view).
 //
 // main.go is a pure composition root: it wires config -> *http.Client ->
-// github.Client -> collect.Collector -> health.Marker, then runs the
-// signal-driven poll loop. All logic lives in internal/*; this file holds
-// no business rules.
+// github.Client -> collect.Collector -> health.Marker. All logic lives in
+// internal/*; this file holds no business rules.
+//
+// Three run modes (matching the fleet's scheduled-app convention):
+//   - scheduled    (SCAN_INTERVAL > 0): an internal jittered timer.
+//   - resident-idle (SCAN_INTERVAL = off): no internal timer; sits healthy
+//     and idle, awaiting external `github-scout trigger` execs (Ofelia).
+//   - trigger      (`github-scout trigger`): one one-shot scan, then exit
+//     0/1 — the target for an Ofelia job-exec or cron.
 //
 // Output model is slog-to-stdout, not a /metrics endpoint: these signals
 // are high-cardinality events/records (run IDs, PR/issue numbers, URLs),
@@ -22,6 +28,7 @@ import (
 	"context"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -35,10 +42,16 @@ import (
 )
 
 func main() {
-	// CLI health probe for the Docker healthcheck (distroless has no
-	// curl/wget). Checks the marker file — no port needed.
-	if len(os.Args) > 1 && os.Args[1] == "health" {
-		health.RunProbe(health.DefaultPath)
+	// CLI subcommands for the distroless image (no shell): `health` for the
+	// Docker healthcheck (checks the marker file), `trigger` for a one-shot
+	// scan driven by an external scheduler (Ofelia job-exec).
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "health":
+			health.RunProbe(health.DefaultPath)
+		case "trigger":
+			runTrigger()
+		}
 	}
 
 	cfg := config.Load()
@@ -60,6 +73,77 @@ func main() {
 	marker.Set(false)
 	defer marker.Cleanup()
 
+	collector, httpClient := buildCollector(&cfg)
+	defer httpx.Close(httpClient)
+
+	if cfg.ScanInterval == 0 {
+		// Resident-idle: no internal timer. Scans are driven externally by
+		// `github-scout trigger` (Ofelia job-exec). Healthy while idle; the
+		// trigger runs update the marker to reflect each scan's outcome.
+		marker.Set(true)
+		slog.Info("resident-idle mode", "reason", "SCAN_INTERVAL=off, awaiting external trigger")
+		<-ctx.Done()
+	} else {
+		// First scan inline so the container reports healthy (or not) quickly.
+		marker.Set(runScan(ctx, collector))
+		slog.Info("scheduled mode", "interval", cfg.ScanInterval, "jitter", "±10%")
+		runScheduled(ctx, cfg.ScanInterval, collector, marker)
+	}
+
+	marker.Cleanup()
+	slog.Info("shutdown complete")
+}
+
+// runTrigger executes a single scan and exits — the target for external
+// schedulers (Ofelia job-exec, cron). os.Exit lives here, free of pending
+// defers; doTrigger holds the defers and returns the exit code.
+func runTrigger() {
+	os.Exit(doTrigger())
+}
+
+// doTrigger loads config, runs one scan, and returns the process exit code
+// (0 healthy, 1 unhealthy / misconfigured). Each trigger is an independent
+// process: it does NOT share the resident process's failed-run dedup set,
+// so failures still inside the lookback window are re-emitted on each
+// trigger. The dashboard deduplicates by run_id, so counts stay correct —
+// this mirrors the snapshot signals (PRs / issues / alerts), which re-emit
+// the full open set every scan regardless.
+func doTrigger() int {
+	cfg := config.Load()
+	setupLogging(cfg.LogLevel)
+	logConfig(&cfg)
+
+	if !cfg.Valid() {
+		slog.Error("invalid configuration; need GITHUB_OWNER and GITHUB_TOKEN",
+			"owner_set", cfg.Owner != "", "token_set", cfg.Token != "")
+		return 1
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// No marker.Cleanup here: in resident-idle deployments the main process
+	// owns /tmp/.healthy; this trigger runs as a separate `docker exec` and
+	// only updates the marker to reflect the run's outcome — deleting it
+	// would mark the resident container unhealthy.
+	marker := health.NewMarker(health.DefaultPath)
+
+	collector, httpClient := buildCollector(&cfg)
+	defer httpx.Close(httpClient)
+
+	ok := runScan(ctx, collector)
+	marker.Set(ok)
+	slog.Info("trigger scan complete", "healthy", ok)
+	if !ok {
+		return 1
+	}
+	return 0
+}
+
+// buildCollector wires config -> *http.Client -> github.Client ->
+// collect.Collector. Shared by the scheduled/resident main path and the
+// one-shot trigger path. The caller owns httpx.Close on the returned client.
+func buildCollector(cfg *config.Config) (*collect.Collector, *http.Client) {
 	httpClient := httpx.NewClient(30 * time.Second)
 	gh := github.NewClient(httpClient, cfg.Token, nil, slog.Default())
 	collector := collect.New(&collect.Deps{
@@ -71,21 +155,7 @@ func main() {
 		PRExclude:    cfg.PRExclude,
 		IssueExclude: cfg.IssueExclude,
 	})
-
-	// First scan inline so the container reports healthy (or not) quickly.
-	marker.Set(runScan(ctx, collector))
-
-	if cfg.PollInterval == 0 {
-		slog.Info("one-shot mode; scan complete, idling until signal")
-		<-ctx.Done()
-	} else {
-		slog.Info("scheduled mode", "interval", cfg.PollInterval, "jitter", "±10%")
-		runScheduled(ctx, cfg.PollInterval, collector, marker)
-	}
-
-	marker.Cleanup()
-	httpx.Close(httpClient)
-	slog.Info("shutdown complete")
+	return collector, httpClient
 }
 
 // runScan executes one scan, recovering from a panic so a single bad
@@ -100,9 +170,9 @@ func runScan(ctx context.Context, collector *collect.Collector) (healthy bool) {
 	return collector.Scan(ctx)
 }
 
-// runScheduled scans on each tick of a PollInterval timer with ±10%
-// jitter until ctx is cancelled. Jitter avoids a predictable, synchronized
-// hammer on the GitHub API across restarts.
+// runScheduled scans on each tick of a ScanInterval timer with ±10% jitter
+// until ctx is cancelled. Jitter avoids a predictable, synchronized hammer
+// on the GitHub API across restarts.
 func runScheduled(ctx context.Context, interval time.Duration, collector *collect.Collector, marker *health.Marker) {
 	for {
 		jitterMax := max(1, int(interval/5))
@@ -134,10 +204,14 @@ func setupLogging(level slog.Level) {
 // logConfig logs the active configuration at startup. The token is never
 // logged — only whether one is present.
 func logConfig(cfg *config.Config) {
+	mode := "resident-idle"
+	if cfg.ScanInterval > 0 {
+		mode = cfg.ScanInterval.String()
+	}
 	slog.Info("configuration loaded",
 		"owner", cfg.Owner,
 		"token_set", cfg.Token != "",
-		"poll_interval", cfg.PollInterval,
+		"scan_interval", mode,
 		"lookback", cfg.Lookback,
 		"excluded_repos", len(cfg.ExcludeRepos))
 }

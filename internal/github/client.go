@@ -1,10 +1,11 @@
 // Package github is github-scout's GitHub REST API client. It exposes
-// exactly the two reads the scout needs — discover an owner's repos, and
-// list a repo's failed workflow runs — over the cplieger/httpx retry
-// transport. Public repos and (with a token that can see them) private
-// repos are both covered, which is the whole reason this exists: the
-// Grafana GitHub-datasource plugin cannot enumerate "all workflows across
-// all repos", and private repos have no org-level alert endpoint.
+// exactly the reads the scout needs — discover an owner's repos, list a
+// repo's completed workflow runs, search open PRs and issues across all of
+// them, and list a repo's code-scanning alerts — over the cplieger/httpx
+// retry transport. Public repos and (with a token that can see them)
+// private repos are both covered, which is the whole reason this exists:
+// the Grafana GitHub-datasource plugin cannot enumerate "all workflows
+// across all repos", and private repos have no org-level alert endpoint.
 //
 // Attribution: the auth-header set and the page-count pagination approach
 // follow patterns common to the MIT-licensed community GitHub exporters
@@ -138,42 +139,24 @@ type apiRun struct {
 	RunNumber  int64     `json:"run_number"`
 }
 
-// ListFailedRuns returns failed workflow runs for repo created at or after
-// since. It issues one query per conclusion in model.FailureConclusions
-// (the Actions API filters on a single status value per request), so a
-// timed-out scheduled job is caught alongside an outright build failure.
-// Partial failure is surfaced to the caller: if one conclusion query
-// fails the others still return, and the error is non-nil so the caller
-// can log degradation without losing the runs it did collect.
-func (c *Client) ListFailedRuns(ctx context.Context, repo model.Repo, since time.Time) ([]model.FailedRun, error) {
+// ListRuns returns all completed workflow runs for repo created at or after
+// since, in a single paginated query. status=completed catches every
+// conclusion (success, failure, timed_out, cancelled, …) in one request,
+// so the former per-conclusion fan-out is gone: the collector emits each
+// run once and classifies failures via model.IsFailureConclusion, and the
+// dashboard derives both the failures view and the failure rate from the
+// one all-runs stream. The Actions API returns runs newest-first, so a repo
+// that exceeds maxPages*perPage completed runs inside the lookback window
+// has its oldest runs truncated — acceptable, since that volume is itself a
+// signal worth investigating directly.
+func (c *Client) ListRuns(ctx context.Context, repo model.Repo, since time.Time) ([]model.WorkflowRun, error) {
 	if !urlsafe.IsSafeURLSegment(repo.Owner) || !urlsafe.IsSafeURLSegment(repo.Name) {
 		return nil, fmt.Errorf("unsafe repo segment: %q", repo.FullName())
 	}
-	var (
-		runs     []model.FailedRun
-		firstErr error
-	)
-	for _, conclusion := range model.FailureConclusions {
-		got, err := c.listRunsByStatus(ctx, repo, conclusion, since)
-		if err != nil {
-			c.logger.Warn("failed to list runs for conclusion",
-				"repo", repo.FullName(), "conclusion", conclusion, "error", err)
-			if firstErr == nil {
-				firstErr = err
-			}
-			continue
-		}
-		runs = append(runs, got...)
-	}
-	return runs, firstErr
-}
-
-// listRunsByStatus pages through runs for a single status/conclusion.
-func (c *Client) listRunsByStatus(ctx context.Context, repo model.Repo, status string, since time.Time) ([]model.FailedRun, error) {
-	var runs []model.FailedRun
+	var runs []model.WorkflowRun
 	for page := 1; page <= maxPages; page++ {
 		q := url.Values{}
-		q.Set("status", status)
+		q.Set("status", "completed")
 		q.Set("per_page", strconv.Itoa(perPage))
 		q.Set("page", strconv.Itoa(page))
 		// GitHub accepts a date-range operator in `created`; url.Values
@@ -186,7 +169,7 @@ func (c *Client) listRunsByStatus(ctx context.Context, repo model.Repo, status s
 			return runs, err
 		}
 		for _, r := range pageData.WorkflowRuns {
-			runs = append(runs, model.FailedRun{
+			runs = append(runs, model.WorkflowRun{
 				Repo:       repo.FullName(),
 				Workflow:   r.Name,
 				RunID:      r.ID,
@@ -354,10 +337,15 @@ type apiCodeAlert struct {
 	Number int64 `json:"number"`
 }
 
-// ListCodeScanningAlerts returns open code-scanning alerts for repo. Repos
-// without code scanning enabled (private repos lacking Advanced Security,
-// or repos that never configured CodeQL) return 403/404; those are NOT
-// errors — the repo simply has no alerts to surface, so we return empty.
+// ListCodeScanningAlerts returns open code-scanning alerts for repo. A repo
+// that never ran code scanning returns 404 (no analyses), which is NOT an
+// error — it simply has no alerts, so we return empty. A 403 is returned as
+// an error instead: it can mean GitHub Advanced Security is disabled
+// (expected on private repos) but ALSO a missing token scope or a
+// rate-limit, and silently reporting zero alerts on those would hide a
+// security signal. The collector logs a 403 as a warning and stays healthy;
+// silence an expected, persistent one (e.g. a private repo without Advanced
+// Security) via EXCLUDE_REPOS.
 func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([]model.CodeScanningAlert, error) {
 	if !urlsafe.IsSafeURLSegment(repo.Owner) || !urlsafe.IsSafeURLSegment(repo.Name) {
 		return nil, fmt.Errorf("unsafe repo segment: %q", repo.FullName())
@@ -372,8 +360,8 @@ func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([
 
 		var page0 []apiCodeAlert
 		if err := c.getJSON(ctx, reqURL, &page0); err != nil {
-			if codeScanningUnavailable(err) {
-				return nil, nil // feature not enabled for this repo — not an error
+			if codeScanningNotFound(err) {
+				return nil, nil // no analyses for this repo — not an error
 			}
 			return alerts, err
 		}
@@ -396,14 +384,18 @@ func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([
 	return alerts, nil
 }
 
-// codeScanningUnavailable reports whether err is a 403/404 — the statuses
-// GitHub returns when code scanning is not enabled / not available for a
-// repository, which the collector treats as "no alerts" rather than a
-// failure.
-func codeScanningUnavailable(err error) bool {
+// codeScanningNotFound reports whether err is a 404 — the status GitHub
+// returns when a repository has no code-scanning analyses (the feature was
+// never configured, or no CodeQL run has completed). That is genuinely "no
+// alerts", so the collector skips it silently. A 403 is deliberately NOT
+// treated here: it conflates GitHub Advanced Security being disabled
+// (common on private repos) with a missing token scope or a rate-limit, and
+// silently reporting zero alerts on the latter two would be a false-negative
+// on a security signal — so a 403 is surfaced as an error instead.
+func codeScanningNotFound(err error) bool {
 	var se *httpx.StatusError
 	if errors.As(err, &se) {
-		return se.Code == 403 || se.Code == 404
+		return se.Code == http.StatusNotFound
 	}
 	return false
 }

@@ -1,8 +1,15 @@
 // Package config parses github-scout configuration from environment
-// variables. The env var names (GITHUB_TOKEN, GITHUB_OWNER,
-// POLL_INTERVAL_MINUTES, LOOKBACK_HOURS, LOG_LEVEL, EXCLUDE_REPOS) are an
-// inviolate compose-file contract — the in-memory shape may evolve, but
-// the names and parsing semantics must stay stable.
+// variables. The env var names (GITHUB_TOKEN, GITHUB_OWNER, SCAN_INTERVAL,
+// LOOKBACK_HOURS, LOG_LEVEL, EXCLUDE_REPOS, PR_EXCLUDE_QUERY,
+// ISSUE_EXCLUDE_QUERY) are an inviolate compose-file contract — the
+// in-memory shape may evolve, but the names and parsing semantics must
+// stay stable.
+//
+// SCAN_INTERVAL follows the fleet's scheduled-app convention (DUMP_INTERVAL,
+// SCHEDULE_INTERVAL, SYNC_INTERVAL, …): a Go duration string, with the
+// sentinels off / disabled / 0 / 0s selecting resident-idle mode (no
+// internal timer; scans are driven externally by `github-scout trigger`,
+// e.g. an Ofelia job-exec).
 package config
 
 import (
@@ -17,10 +24,11 @@ import (
 
 // Defaults for env-var-backed fields. Exported for test assertions.
 const (
-	// DefaultPollMinutes is the gap between scans. 15 minutes keeps the
-	// "what just broke" latency low while staying far under GitHub's
-	// authenticated 5000 req/hour budget (a few hundred calls per scan).
-	DefaultPollMinutes = 15
+	// DefaultScanInterval is the gap between scans in scheduled mode. 15
+	// minutes keeps the "what just broke" latency low while staying far
+	// under GitHub's authenticated 5000 req/hour budget (a few hundred
+	// calls per scan).
+	DefaultScanInterval = 15 * time.Minute
 	// DefaultLookbackHours bounds how far back a scan looks for failures.
 	// 72h means a Friday-night failure is still surfaced on Monday. It
 	// also bounds the in-memory dedup set and the per-repo API page count.
@@ -33,9 +41,9 @@ const (
 	// auto-generated trackers (gremlins mutation-testing issues carry the
 	// `auto-generated` label) out of the open-issue signal.
 	DefaultIssueExclude = "-author:app/renovate -label:renovate -label:auto-generated"
-	// maxPollMinutes guards against time.Duration overflow / nonsense
-	// configuration (a year between scans defeats the purpose).
-	maxPollMinutes = 60 * 24 * 365
+	// maxScanInterval guards against nonsense configuration (a year between
+	// scans defeats the purpose).
+	maxScanInterval = 365 * 24 * time.Hour
 	// maxLookbackHours caps the lookback window. 30 days is already far
 	// past "actionable"; beyond it the dedup set and API cost grow without
 	// surfacing anything a human would still act on.
@@ -57,9 +65,10 @@ type Config struct {
 	// IssueExclude is appended to the open-issue search query to filter
 	// bot / auto-generated noise.
 	IssueExclude string
-	// PollInterval is the gap between scans (0 = one-shot: scan once then
-	// exit-idle, mirroring registry-stats' one-shot mode for debugging).
-	PollInterval time.Duration
+	// ScanInterval is the gap between scans in scheduled mode. Zero selects
+	// resident-idle mode: no internal timer, scans driven externally by the
+	// `trigger` subcommand (Ofelia job-exec). Parsed from SCAN_INTERVAL.
+	ScanInterval time.Duration
 	// Lookback is how far back each scan considers runs.
 	Lookback time.Duration
 	// LogLevel is parsed from LOG_LEVEL.
@@ -74,9 +83,38 @@ func Load() Config {
 		ExcludeRepos: parseExcludes(os.Getenv("EXCLUDE_REPOS")),
 		PRExclude:    GetEnv("PR_EXCLUDE_QUERY", DefaultPRExclude),
 		IssueExclude: GetEnv("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
-		PollInterval: time.Duration(clampedInt("POLL_INTERVAL_MINUTES", DefaultPollMinutes, 0, maxPollMinutes)) * time.Minute,
+		ScanInterval: parseScanInterval(os.Getenv("SCAN_INTERVAL")),
 		Lookback:     time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
 		LogLevel:     parseLogLevel(os.Getenv("LOG_LEVEL")),
+	}
+}
+
+// parseScanInterval parses SCAN_INTERVAL into the gap between scans. It
+// accepts a Go duration (e.g. "15m", "1h30m") or the sentinels off /
+// disabled / 0 / 0s, which select resident-idle mode (return 0: no internal
+// timer, scans driven by the `trigger` subcommand). An unset value uses the
+// default; an invalid or negative value warns and falls back to the default
+// so a typo degrades to "still scanning" rather than silent idle.
+func parseScanInterval(raw string) time.Duration {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return DefaultScanInterval
+	case "off", "disabled", "0", "0s":
+		return 0
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	switch {
+	case err != nil:
+		slog.Warn("invalid SCAN_INTERVAL, using default", "value", raw, "default", DefaultScanInterval, "error", err)
+		return DefaultScanInterval
+	case d < 0:
+		slog.Warn("negative SCAN_INTERVAL, using default", "value", raw, "default", DefaultScanInterval)
+		return DefaultScanInterval
+	case d > maxScanInterval:
+		slog.Warn("SCAN_INTERVAL clamped", "value", raw, "max", maxScanInterval)
+		return maxScanInterval
+	default:
+		return d
 	}
 }
 
@@ -116,15 +154,14 @@ func parseExcludes(s string) map[string]bool {
 
 // clampedInt reads an integer env var and clamps it to [lo, hi]. On parse
 // error or out-of-range it returns def (when below lo) or the clamp bound.
-// A negative or non-numeric value falls back to def.
+// A negative or non-numeric value falls back to def. Used for LOOKBACK_HOURS.
 func clampedInt(key string, def, lo, hi int) int {
 	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
 	if err != nil {
 		return def
 	}
 	if v < lo {
-		// 0 is meaningful for POLL_INTERVAL_MINUTES (one-shot), so lo=0
-		// there; for LOOKBACK_HOURS lo=1 and a 0/negative falls back.
+		// LOOKBACK_HOURS floors at lo=1; a 0/negative value falls back to def.
 		if v < 0 {
 			return def
 		}
