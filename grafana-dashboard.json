@@ -200,7 +200,7 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "count(count by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__range])))",
+          "expr": "count(count by (run_id) (count_over_time({container=\"github-scout\"} |= `workflow run` | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__range])))",
           "queryType": "instant"
         }
       ]
@@ -394,7 +394,7 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "(count(count by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__range]))) or vector(0)) / count(count by (run_id) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure|success` [$__range]))) * 100",
+          "expr": "(count(count by (run_id) (count_over_time({container=\"github-scout\"} |= `workflow run` | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__range]))) or vector(0)) / count(count by (run_id) (count_over_time({container=\"github-scout\"} |= `workflow run` | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure|success` [$__range]))) * 100",
           "queryType": "instant"
         }
       ]
@@ -436,7 +436,7 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "(sum(count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__interval])) or vector(0)) / sum(count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure|success` [$__interval])) * 100",
+          "expr": "(sum(count_over_time({container=\"github-scout\"} |= `workflow run` | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__interval])) or vector(0)) / sum(count_over_time({container=\"github-scout\"} |= `workflow run` | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure|success` [$__interval])) * 100",
           "legendFormat": "failure rate",
           "queryType": "range"
         }
@@ -445,7 +445,7 @@
     {
       "id": 30,
       "title": "Actions runs \u2014 click Link to investigate",
-      "description": "Every completed Actions run across all repos in the selected time range, deduplicated by run ID, newest first. Filter with the Conclusion variable (top of dashboard) \u2014 it defaults to the failure set, so this opens on failed runs; switch to All or success to see everything. github-scout looks back LOOKBACK_HOURS (default 72h), so set the picker accordingly.",
+      "description": "Every completed Actions run across all repos in the selected time range, newest first \u2014 a lightweight log query capped at 500 lines, so it loads fast regardless of how much history is in range. Filter with the Conclusion variable (top of dashboard) \u2014 it defaults to the failure set, so this opens on failed runs; switch to All or success to see everything.",
       "type": "table",
       "gridPos": { "h": 10, "w": 24, "x": 0, "y": 39 },
       "datasource": { "type": "loki", "uid": "${datasource}" },
@@ -479,16 +479,21 @@
         {
           "refId": "A",
           "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "count by (repo, workflow, conclusion, branch, event, run_number, run_id, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`workflow run` | conclusion=~`${conclusion:pipe}` [$__range]))",
-          "queryType": "instant"
+          "expr": "{container=\"github-scout\"} |= `workflow run` | json | msg=`workflow run` | conclusion=~`${conclusion:pipe}`",
+          "queryType": "range",
+          "maxLines": 500
         }
       ],
       "transformations": [
+        { "id": "extractFields", "options": { "source": "Line", "format": "json", "replace": false, "keepTime": false } },
         { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "created_at", "destinationType": "time" } ] } },
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true, "Value": true, "run_id": true },
+            "excludeByName": {
+              "Time": true, "Line": true, "labels": true, "id": true, "tsNs": true,
+              "level": true, "msg": true, "time": true, "run_id": true
+            },
             "indexByName": {
               "created_at": 0, "repo": 1, "workflow": 2, "conclusion": 3,
               "branch": 4, "event": 5, "run_number": 6, "url": 7
