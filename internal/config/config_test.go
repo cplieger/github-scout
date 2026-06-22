@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,7 +95,9 @@ func TestClampingAndFallbacks(t *testing.T) {
 		{name: "scan garbage falls back to default", key: "SCAN_INTERVAL", val: "abc", want: DefaultScanInterval, selector: func(c Config) time.Duration { return c.ScanInterval }},
 		{name: "scan over max is clamped", key: "SCAN_INTERVAL", val: "10000h", want: maxScanInterval, selector: func(c Config) time.Duration { return c.ScanInterval }},
 		{name: "lookback zero floors to lo=1", key: "LOOKBACK_HOURS", val: "0", want: 1 * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
+		{name: "lookback at lo boundary is kept", key: "LOOKBACK_HOURS", val: "1", want: 1 * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
 		{name: "lookback negative falls back to default", key: "LOOKBACK_HOURS", val: "-1", want: DefaultLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
+		{name: "lookback at hi boundary is kept", key: "LOOKBACK_HOURS", val: "720", want: maxLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
 		{name: "lookback over max is clamped", key: "LOOKBACK_HOURS", val: "100000", want: maxLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
 	}
 	for _, tt := range tests {
@@ -103,6 +107,34 @@ func TestClampingAndFallbacks(t *testing.T) {
 				t.Errorf("%s = %v, want %v", tt.key, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestClampedIntWarnsOverMax pins the over-max warning side effect. The clamp
+// uses min/max builtins (no boundary operators to mutate), so the only
+// remaining conditional is `clamped != v`, which gates this warning. Asserting
+// the warning fires when (and only when) the value is clamped down makes that
+// guard's mutants (==, removal) killable — the return-value table tests alone
+// cannot see a log-only branch. Guards against the L163 "living mutant".
+func TestClampedIntWarnsOverMax(t *testing.T) {
+	capture := func(val string) string {
+		var buf bytes.Buffer
+		prev := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+		defer slog.SetDefault(prev)
+		t.Setenv("LOOKBACK_HOURS", val)
+		_ = Load()
+		return buf.String()
+	}
+
+	if out := capture("100000"); !strings.Contains(out, "env value clamped") {
+		t.Errorf("over-max value should warn; log = %q", out)
+	}
+	// In-range and at-boundary values must NOT warn (kills the negated guard).
+	for _, v := range []string{"48", "720", "1"} {
+		if out := capture(v); strings.Contains(out, "env value clamped") {
+			t.Errorf("LOOKBACK_HOURS=%s should not warn; log = %q", v, out)
+		}
 	}
 }
 
