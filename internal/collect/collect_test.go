@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -203,6 +205,61 @@ func TestPruneDropsRunsOlderThanLookback(t *testing.T) {
 	}
 	if _, ok := c.seen[2]; !ok {
 		t.Errorf("run 2 (within lookback) should be retained")
+	}
+}
+
+// TestStatePersistsDedupAcrossProcesses simulates two separate Ofelia
+// trigger processes sharing the same /tmp: the first scan emits the run and
+// persists the dedup set; a fresh collector loading the same state file must
+// NOT re-emit it. This is the property that makes trigger-mode dedup work.
+func TestStatePersistsDedupAcrossProcesses(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "seen-runs.json")
+	runs := map[string][]model.WorkflowRun{"cplieger/x": {
+		{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)},
+	}}
+	mk := func() (*Collector, *recordingHandler) {
+		rec := &recordingHandler{}
+		fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "x"}}, runs: runs}
+		c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
+		return c, rec
+	}
+
+	c1, rec1 := mk()
+	c1.Scan(context.Background())
+	if got := rec1.countMsg("workflow run"); got != 1 {
+		t.Fatalf("first trigger emitted %d workflow-run lines, want 1", got)
+	}
+
+	c2, rec2 := mk() // fresh "process", same state file
+	c2.Scan(context.Background())
+	if got := rec2.countMsg("workflow run"); got != 0 {
+		t.Errorf("second trigger emitted %d workflow-run lines, want 0 (dedup state reloaded)", got)
+	}
+	if _, ok := c2.seen[9]; !ok {
+		t.Errorf("run 9 should be present in the reloaded dedup set")
+	}
+}
+
+// TestStateCorruptStartsCold verifies a corrupt/garbage state file is
+// tolerated: the collector starts with an empty set (re-emitting the
+// lookback window once) rather than panicking, and rewrites valid state.
+func TestStateCorruptStartsCold(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "seen-runs.json")
+	if err := os.WriteFile(statePath, []byte("{not valid json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordingHandler{}
+	fc := &fakeClient{
+		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
+		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+	}
+	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
+	c.Scan(context.Background()) // must not panic
+	if got := rec.countMsg("workflow run"); got != 1 {
+		t.Errorf("corrupt state should start cold and emit the run; got %d", got)
+	}
+	if _, ok := c.seen[9]; !ok {
+		t.Errorf("run 9 should be in the set after the cold scan")
 	}
 }
 

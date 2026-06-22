@@ -41,6 +41,16 @@ import (
 	"github.com/cplieger/httpx"
 )
 
+// seenStatePath persists the run dedup set across one-shot `trigger`
+// processes. It lives in /tmp alongside the health marker: /tmp is shared
+// across `docker exec` triggers of the same running container, so each
+// trigger reloads the previous one's set and re-emits nothing. A container
+// recreate clears /tmp, which at worst re-emits the lookback window once
+// (the documented cold-start behaviour). In scheduled/resident mode the
+// long-lived process also persists here, so a plain restart no longer
+// re-emits either.
+const seenStatePath = "/tmp/seen-runs.json"
+
 func main() {
 	// CLI subcommands for the distroless image (no shell): `health` for the
 	// Docker healthcheck (checks the marker file), `trigger` for a one-shot
@@ -103,11 +113,12 @@ func runTrigger() {
 
 // doTrigger loads config, runs one scan, and returns the process exit code
 // (0 healthy, 1 unhealthy / misconfigured). Each trigger is an independent
-// process: it does NOT share the resident process's failed-run dedup set,
-// so failures still inside the lookback window are re-emitted on each
-// trigger. The dashboard deduplicates by run_id, so counts stay correct —
-// this mirrors the snapshot signals (PRs / issues / alerts), which re-emit
-// the full open set every scan regardless.
+// process, but the run dedup set is persisted to seenStatePath (in /tmp,
+// shared across `docker exec` triggers of the same running container), so a
+// trigger reloads the previous one's set and emits each completed run
+// exactly once — no re-emission across triggers. A container recreate clears
+// /tmp and at worst re-emits the lookback window once. Open PRs / issues /
+// alerts remain pure snapshots (re-emitted every scan by design).
 func doTrigger() int {
 	cfg := config.Load()
 	setupLogging(cfg.LogLevel)
@@ -154,6 +165,7 @@ func buildCollector(cfg *config.Config) (*collect.Collector, *http.Client) {
 		Exclude:      cfg.ExcludeRepos,
 		PRExclude:    cfg.PRExclude,
 		IssueExclude: cfg.IssueExclude,
+		StatePath:    seenStatePath,
 	})
 	return collector, httpClient
 }
