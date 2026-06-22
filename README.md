@@ -10,10 +10,10 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/github-scout/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/github-scout)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/github-scout/releases)
 
-One cross-repo view of everything that needs a look across your GitHub repos —
-open pull requests, open issues, code-scanning alerts, and failed Actions runs
-(with a failure-rate trend) — shipped to Loki, rendered by a ready-made Grafana
-dashboard, with a click-through link on every row.
+One cross-repo view of everything that needs a look across your GitHub repos:
+open pull requests, open issues, code-scanning alerts, and failed Actions runs,
+shipped to Loki and rendered by a ready-made Grafana dashboard, with a
+click-through link on every row.
 
 ## The problem
 
@@ -40,20 +40,19 @@ schedule and surfaces four actionable signals across all of them, each as a
 structured JSON log line. Ship those lines to Loki with Grafana Alloy (or any
 log collector) and the bundled dashboard gives you:
 
-- **Open pull requests** — every open PR across every repo, newest first, with a
+- **Open pull requests**: every open PR across every repo, newest first, with a
   click-through link (Renovate PRs filtered out by default);
-- **Open issues** — every open issue, with labels and author (Renovate and
+- **Open issues**: every open issue, with labels and author (Renovate and
   auto-generated trackers filtered out by default);
-- **Code-scanning alerts** — every open CodeQL / code-scanning alert, colour-
+- **Code-scanning alerts**: every open CodeQL / code-scanning alert, colour-
   coded by severity;
-- **Actions runs** — every completed run; the failed ones (failure, timed out,
-  or startup failure) are the headline, with a failure-rate trend over time;
-- a **scout-health row** (status, scan errors, repos scanned) so you know the
-  watcher itself is alive.
+- **Failed Actions runs**: every failed, timed-out, or startup-failed run across
+  all repos, newest first, with a click-through link;
+- a **scout-health tile** so you know the watcher itself is still scanning.
 
-It discovers repositories and workflows dynamically on every scan, so a new
-repo — or a new workflow inside an existing one — is picked up automatically
-with zero configuration changes.
+It discovers repositories and workflows dynamically on every scan, so a new repo
+(or a new workflow inside an existing one) is picked up automatically with zero
+configuration changes.
 
 ## Design
 
@@ -81,8 +80,8 @@ The four signals split into two shapes:
 - **Event-once** (Actions runs). A completed run happens at a point in time, so
   each run ID is emitted **exactly once**, as `msg="workflow run"` carrying its
   `conclusion`. A plain log count therefore equals the number of distinct runs;
-  the dashboard filters by conclusion for the failures view and derives the
-  failure rate from the same stream. The dedup set is a map of run ID → creation
+  the dashboard filters by conclusion for the failures view. The dedup set is a
+  map of run ID → creation
   time, pruned to the lookback window so it stays bounded. It lives in memory in
   the long-lived scheduled process and is also persisted to a small file
   (`/tmp/seen-runs.json`) so the same run is not re-emitted across one-shot
@@ -256,32 +255,49 @@ Every line also carries `repo`, `url`, and `created_at`:
 - `open issue` (snapshot) — `number`, `title`, `author`, `labels`
 - `code scanning alert` (snapshot) — `number`, `rule`, `severity`, `tool`
 
-The `conclusion` is any completed-run outcome — `success`, `failure`,
-`timed_out`, `startup_failure`, `cancelled`, `skipped`, or `neutral`; the
+The `conclusion` is any completed-run outcome (`success`, `failure`,
+`timed_out`, `startup_failure`, `cancelled`, `skipped`, or `neutral`); the
 dashboard treats `failure` / `timed_out` / `startup_failure` as the failure set
-(for the failed-run count and the failure-rate panels). Each scan also logs a
+(the failed-run count tile and the failures table). Each scan also logs a
 `scan complete` summary line (`scanned`, `skipped`, `open_prs`, `open_issues`,
 `code_alerts`, `new_runs`, `new_failures`, `tracked`, `duration`); a
 repo-discovery failure logs at `error` level.
 
 ## Grafana integration
 
-Ship the container's stdout to Loki — Grafana Alloy's Docker log discovery does
-this with no extra configuration — and import `grafana-dashboard.json`. The
-dashboard uses a standard Loki datasource (no plugins) and is organised into
-"open work" (PRs, issues, alerts — current state) and "Actions runs" (recent
-events — a failure-rate trend plus a conclusion-filtered run table), each with
-count tiles and a linked table. Every query is built on:
+Ship the container's stdout to Loki (Grafana Alloy's Docker log discovery does
+this with no extra configuration) and import `grafana-dashboard.json` (or drop
+it into a file-based dashboard provider). The dashboard uses a standard Loki
+datasource (no plugins) and is organised top to bottom in the order you ask
+questions:
+
+1. **At a glance**: four count tiles (open PRs, open issues, code-scanning
+   alerts, and failed CI runs in the picker range).
+2. **Open work**: linked tables of the open PRs, issues, and code-scanning
+   alerts as of the most recent scan. The Created column shows relative age
+   ("3 days ago") with a red-to-green gradient, so the stalest items stand out.
+3. **Recent CI failures**: a linked table of failed, timed-out, and
+   startup-failed runs in the selected time range (successful runs are omitted).
+4. **Scout health**: a tile that flips to STALLED if no scan completed recently.
+
+Two controls shape what you see:
+
+- The **Snapshot window** variable sets how far back the open-work tables and
+  their tiles read for the latest snapshot. It must be at least `SCAN_INTERVAL`;
+  the default `30m` gives 2x headroom at the default 15m scan interval. It does
+  not affect the failure panels.
+- The **time picker** affects only the failed-runs tile and table; keep it
+  within `LOOKBACK_HOURS` (default 72h), the furthest back each scan looks.
+
+Every panel is built on a single Loki selector, for example:
 
 ```logql
 {container="github-scout"} | json | msg=`open pull request`
 ```
 
-Tables render the `url` field as a click-through link; the snapshot panels read
-the most recent scan (a window slightly longer than the poll interval) so they
-show what is open right now. Because the events are plain logs, you can also
-write a Loki ruler alert (`count_over_time(... [1h]) > 0`) to be notified the
-moment anything breaks.
+Tables render the `url` field as a click-through link. Because the events are
+plain logs, you can also write a Loki ruler alert
+(`count_over_time(... [1h]) > 0`) to be notified the moment anything breaks.
 
 ## Healthcheck
 
