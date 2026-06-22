@@ -6,7 +6,9 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/github-scout)](https://goreportcard.com/report/github.com/cplieger/github-scout)
 [![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/github-scout/badges/coverage.json)](https://github.com/cplieger/github-scout/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/github-scout/badges/mutation.json)](https://github.com/cplieger/github-scout/issues?q=label%3Agremlins-tracker)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13336/badge)](https://www.bestpractices.dev/projects/13336)
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/github-scout/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/github-scout)
+[![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/github-scout/releases)
 
 One cross-repo view of everything that needs a look across your GitHub repos —
 open pull requests, open issues, code-scanning alerts, and failed Actions runs
