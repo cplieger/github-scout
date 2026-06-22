@@ -13,8 +13,8 @@ load-bearing patterns.
 ## What github-scout is (and isn't)
 
 It does one thing: scan a GitHub owner's repositories and surface the items that
-need a look — open pull requests, open issues, code-scanning alerts, and failed
-Actions runs — as structured log lines for Loki. It is deliberately **not** a
+need a look (open pull requests, open issues, code-scanning alerts, and failed
+Actions runs) as structured log lines for Loki. It is deliberately **not** a
 general GitHub metrics exporter: Dependabot is out of scope (it has its own
 alerting), and anything that is just "another number on a dashboard" doesn't
 fit. Keep that focus in mind when proposing changes; "surface an actionable
@@ -28,34 +28,34 @@ contradict those decisions need a strong justification.
 
 `github-scout` is a single Go binary that polls the GitHub REST API on a
 schedule and emits four actionable signals as JSON to stdout. It keeps no
-database — history lives in Loki. The only cross-scan state is the event-once
+database; history lives in Loki. The only cross-scan state is the event-once
 run dedup set, which lives in memory and is also persisted to a small
 `/tmp/seen-runs.json` so it survives across one-shot `trigger` processes (see
 the README's _State_ section). There is no HTTP server and no listening port.
 
-`main.go` is a **pure composition root** — it wires config → `httpx` client →
+`main.go` is a **pure composition root**: it wires config → `httpx` client →
 `github.Client` → `collect.Collector` → health marker, then runs the
 signal-driven poll loop. It contains no business logic; everything testable
 lives under `internal/`:
 
-- `internal/config` — env-var loading, clamping, and validation (`Load`).
-- `internal/github` — the GitHub REST client: `ListRepos` (via
+- `internal/config`: env-var loading, clamping, and validation (`Load`).
+- `internal/github`: the GitHub REST client: `ListRepos` (via
   `/user/repos?affiliation=owner`, so private repos are included),
   `ListRuns` (one paginated `status=completed` query covering all conclusions),
   `SearchOpenPRs` / `SearchOpenIssues` (one cross-repo `/search/issues` query
   each), and `ListCodeScanningAlerts` (per-repo; a 404 means no analyses and is
-  skipped silently, while a 403 — Advanced Security off, missing token scope, or
-  rate limit — is surfaced rather than silently read as zero alerts). Auth
+  skipped silently, while a 403 (Advanced Security off, missing token scope, or
+  rate limit) is surfaced rather than silently read as zero alerts). Auth
   headers, body caps, and page-count pagination live here.
-- `internal/collect` — the scan orchestrator: discover repos → collect the four
+- `internal/collect`: the scan orchestrator: discover repos → collect the four
   signals → emit. It depends on a small consumer-side `apiClient` **interface**
   (not the concrete client), which is the seam that lets the orchestration logic
   be unit-tested with a scripted fake while the HTTP client is tested separately
   against an `httptest` server.
-- `internal/model` — domain types (`Repo`, `WorkflowRun`, `PullRequest`, `Issue`,
+- `internal/model`: domain types (`Repo`, `WorkflowRun`, `PullRequest`, `Issue`,
   `CodeScanningAlert`). Their JSON tags are the Loki field names the dashboard
-  queries, so treat them as a contract — renaming a tag breaks dashboard panels.
-- `internal/urlsafe` — URL path-segment validation, applied to every owner/repo
+  queries, so treat them as a contract; renaming a tag breaks dashboard panels.
+- `internal/urlsafe`: URL path-segment validation, applied to every owner/repo
   name before it is interpolated into a request URL.
 
 Dependencies flow one direction: concrete packages depend on `model` /
@@ -64,7 +64,7 @@ the only place that wires the concrete client into the collector.
 
 ## Development environment
 
-You need Go — the exact version is pinned in [`go.mod`](go.mod). No other
+You need Go; the exact version is pinned in [`go.mod`](go.mod). No other
 runtime tooling is required to build or test.
 
 ```bash
@@ -79,14 +79,14 @@ CI uses (golangci-lint, gitleaks, govulncheck, fieldalignment, …) so your loca
 results match the gate, run that repo's `scripts/install-local-tools.sh`.
 
 Several config files (`.golangci.yaml`, `.editorconfig`, `LICENSE`, the CI
-workflows, `renovate.json`, `cliff.toml`) are **not** committed here — they are
+workflows, `renovate.json`, `cliff.toml`) are **not** committed here; they are
 synced in from `cplieger/ci` and marked `DO NOT EDIT`. Change CI behaviour
 upstream, not in this repo; a local copy would be overwritten by the next sync.
 
 ## Running it locally
 
 Use the `trigger` subcommand with a token so you scan once and exit instead of
-looping (this is also how an external scheduler drives it — see the README's
+looping (this is also how an external scheduler drives it; see the README's
 "Run modes"):
 
 ```bash
@@ -116,13 +116,13 @@ Conventions for tests:
 
 - **Table-driven** for pure logic (config parsing/clamping, model helpers).
 - The **HTTP client** (`internal/github`) is tested against an `httptest`
-  server — assert on the request (auth header, query params, pagination) and the
+  server: assert on the request (auth header, query params, pagination) and the
   decoded result. Never hit the real GitHub API in a test.
 - The **orchestrator** (`internal/collect`) is tested with a scripted fake that
   satisfies the `apiClient` interface, so dedup / pruning / health semantics run
   without any network.
 - Anything that **parses untrusted input** gets a fuzz target. The API JSON
-  decodes have one each — `FuzzDecodeRunsPage`, `FuzzDecodeSearchResp`,
+  decodes have one each: `FuzzDecodeRunsPage`, `FuzzDecodeSearchResp`,
   `FuzzDecodeCodeAlerts`; keep them green and add one if you parse a new
   response shape:
 
@@ -132,11 +132,11 @@ Conventions for tests:
 
 A few house rules the linters enforce that are easy to trip on:
 
-- **`sloglint` kv-only** — plain key/value pairs in `slog` calls, not attribute
+- **`sloglint` kv-only**: plain key/value pairs in `slog` calls, not attribute
   constructors.
-- **`fieldalignment`** — order struct fields to minimise padding (pointer- and
+- **`fieldalignment`**: order struct fields to minimise padding (pointer- and
   `time.Time`-bearing fields placed to keep the GC scan range tight).
-- **No new non-`cplieger` runtime dependencies** without discussion — the small,
+- **No new non-`cplieger` runtime dependencies** without discussion; the small,
   auditable supply chain is a feature.
 - **URL segments from input** must go through `internal/urlsafe`.
 
@@ -145,19 +145,19 @@ A few house rules the linters enforce that are easy to trip on:
 github-scout is structured so a new actionable signal (say, "a deployment was
 left pending") can be added without disturbing the failed-run path:
 
-1. **Model** — add a type in `internal/model` with JSON tags that become the
+1. **Model**: add a type in `internal/model` with JSON tags that become the
    Loki field names (a contract the dashboard queries).
-2. **Client** — add a read method on `internal/github.Client` (page-count
+2. **Client**: add a read method on `internal/github.Client` (page-count
    pagination via `getJSON`, `urlsafe` for any path segments).
-3. **Interface** — extend the consumer-side `apiClient` interface in
+3. **Interface**: extend the consumer-side `apiClient` interface in
    `internal/collect` so the fake can script it.
-4. **Collector** — add a `collect<Signal>` method that emits each item with its
+4. **Collector**: add a `collect<Signal>` method that emits each item with its
    own stable `msg` string; choose the event-once model (dedup by ID, like
    `collectFailedRuns` + `prune`) or the snapshot model (re-emit the full
    current set each scan, like `collectPRs`).
-5. **Dashboard** — add a panel to `grafana-dashboard.json` filtering on the new
+5. **Dashboard**: add a panel to `grafana-dashboard.json` filtering on the new
    `msg`.
-6. **Tests** — `httptest` coverage for the client, fake-driven coverage for the
+6. **Tests**: `httptest` coverage for the client, fake-driven coverage for the
    collector, and a fuzz target if you parse a new response shape.
 
 Keep each signal **actionable** and **event-shaped**. If what you want is a
@@ -166,13 +166,13 @@ trend line of a number, it belongs in a Prometheus exporter, not here.
 ## Commits and pull requests
 
 Branch from `main`, keep changes focused with tests, and open a PR. Commit
-messages follow [Conventional Commits](https://www.conventionalcommits.org/) —
+messages follow [Conventional Commits](https://www.conventionalcommits.org/);
 git-cliff parses them to build release notes and pick the version bump
 (`feat:` → minor, `fix:` / `sec:` → patch/security, `feat!:` → major; `chore`,
 `ci`, `docs`, `test`, etc. don't release). Write the subject as the changelog
 line a user would read. CI must be green: the required `ci / validate` check
 builds the binary and Dockerfile and runs vet/lint/race-tests/govulncheck.
-Releases are automated from the commit history on merge to `main` — contributors
+Releases are automated from the commit history on merge to `main`; contributors
 don't tag or publish manually.
 
 ## Conduct and security

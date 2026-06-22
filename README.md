@@ -17,7 +17,7 @@ click-through link on every row.
 
 ## The problem
 
-If you have more than a handful of repositories, "is anything waiting on me —
+If you have more than a handful of repositories, "is anything waiting on me:
 a stale PR, an open issue, a security alert, a broken nightly job?" is a
 surprisingly hard question to answer:
 
@@ -29,7 +29,7 @@ surprisingly hard question to answer:
 - The GitHub UI shows you each of these **one repo at a time**, and email
   notifications are easy to tune out.
 
-So a broken nightly job — or an open code-scanning alert — in a repo you
+So a broken nightly job (or an open code-scanning alert) in a repo you
 haven't opened in a week goes unnoticed. github-scout closes that gap with a
 single pane of glass across every repo you own.
 
@@ -65,7 +65,7 @@ data, not a numeric time-series. Modelling it as a Prometheus metric forces a
 bad trade-off:
 
 - a bare counter (`open_prs_total 7`) tells you _how many_ but nothing you
-  can click — it loses the entire actionable payload; or
+  can click, which loses the entire actionable payload; or
 - an info-metric with the URL/title as labels reintroduces the detail but
   abuses Prometheus with unbounded label cardinality and sticky stale series.
 
@@ -85,7 +85,7 @@ The four signals split into two shapes:
   time, pruned to the lookback window so it stays bounded. It lives in memory in
   the long-lived scheduled process and is also persisted to a small file
   (`/tmp/seen-runs.json`) so the same run is not re-emitted across one-shot
-  `trigger` runs — see _State_ below.
+  `trigger` runs; see _State_ below.
 - **Snapshot** (open PRs, open issues, code-scanning alerts). These are current
   _state_: an item stays open across scans, so github-scout re-emits the full
   current set **every scan**. When an item is closed / merged / fixed it simply
@@ -93,15 +93,15 @@ The four signals split into two shapes:
   scan as "what is open right now" (panels deduplicate by repo + number over a
   window slightly longer than the poll interval). No dedup state is needed.
 
-github-scout keeps **no database** — history lives in Loki. The only cross-scan
+github-scout keeps **no database**; history lives in Loki. The only cross-scan
 state is the event-once dedup set (run ID → creation time, bounded to the
 lookback window). In the long-lived scheduled/resident process it lives in
 memory; under an external scheduler each `trigger` is a fresh process, so the
 set is persisted to a small JSON file at `/tmp/seen-runs.json` and reloaded on
 the next trigger. Because `/tmp` is shared across `docker exec` triggers of the
 same running container, a run is emitted once and not re-emitted on the
-following trigger. A cold start — the first run, or a container **recreate**
-that clears `/tmp` — at worst re-logs runs still inside the lookback window; the
+following trigger. A cold start (the first run, or a container **recreate**
+that clears `/tmp`) at worst re-logs runs still inside the lookback window; the
 dashboard also dedups run counts by run ID, so counts stay correct either way.
 Persistence is a best-effort optimisation, never a correctness dependency.
 
@@ -113,7 +113,7 @@ main.go                         composition root + jittered poll loop
   └─ internal/github            GitHub REST client (repos, runs, PRs, issues, code scanning)
   └─ internal/collect           scan orchestrator: discover → collect signals → emit
        └─ apiClient (interface) consumer-side seam; the github client satisfies it
-  └─ internal/model             pure data types (Repo, FailedRun, PullRequest, Issue, CodeScanningAlert)
+  └─ internal/model             pure data types (Repo, WorkflowRun, PullRequest, Issue, CodeScanningAlert)
   └─ internal/urlsafe           URL path-segment safety predicate
 ```
 
@@ -148,7 +148,7 @@ services:
       LOOKBACK_HOURS: "72"               # how far back to consider failed runs
       EXCLUDE_REPOS: ""                  # comma-separated bare repo names to skip
       LOG_LEVEL: "info"
-      # Optional noise filters (defaults shown) — raw GitHub search qualifiers:
+      # Optional noise filters (defaults shown), raw GitHub search qualifiers:
       # PR_EXCLUDE_QUERY: "-author:app/renovate"
       # ISSUE_EXCLUDE_QUERY: "-author:app/renovate -label:renovate -label:auto-generated"
 
@@ -167,7 +167,7 @@ metadata, Actions, pull requests, issues, and code scanning. Either token type
 works, and both keep discovery dynamic (new repos auto-included):
 
 - **Classic PAT:** `repo` covers private **and** public repos for all four
-  signals — or `public_repo` for public-only repositories. `workflow` and
+  signals, or `public_repo` for public-only repositories. `workflow` and
   `security_events` are **not** separate requirements (`repo` already grants
   Actions and code-scanning read).
 - **Fine-grained PAT (recommended):** Repository access = **All repositories**
@@ -200,29 +200,29 @@ clamped), so misconfiguration degrades safely rather than crashing.
 
 ### Run modes
 
-github-scout matches the fleet's scheduled-app convention — an internal timer
-or an external scheduler, your choice:
+github-scout matches the fleet's scheduled-app convention. You choose an
+internal timer or an external scheduler:
 
 - **Scheduled** (`SCAN_INTERVAL=15m`, the default): an internal jittered timer
   drives the scans. Failed runs are deduplicated in memory and emitted once.
 - **Resident-idle** (`SCAN_INTERVAL=off`): no internal timer. The container
   sits healthy and idle while an external scheduler runs `github-scout trigger`
-  on its own cadence — e.g. an Ofelia `job-exec`, like the rest of the fleet.
-- **Trigger** (`github-scout trigger`): one scan, then exit 0/1 — the target
+  on its own cadence, e.g. an Ofelia `job-exec`, like the rest of the fleet.
+- **Trigger** (`github-scout trigger`): one scan, then exit 0/1; the target
   for that external scheduler, or a manual one-shot run.
 
 Each `trigger` is an independent process, but the run dedup set is persisted to
 `/tmp/seen-runs.json` (shared across `docker exec` triggers of the same running
 container), so a trigger reloads the previous one's set and emits each completed
-run exactly once — no re-emission across triggers. A container recreate clears
+run exactly once, with no re-emission across triggers. A container recreate clears
 `/tmp` and at worst re-logs the lookback window once. The snapshot signals
 (PRs / issues / alerts) re-emit the full open set every scan by design.
 
 Two optional noise filters take raw GitHub search qualifiers, appended to the
 cross-repo PR/issue searches:
 
-- `PR_EXCLUDE_QUERY` — default `-author:app/renovate` (drops Renovate PRs).
-- `ISSUE_EXCLUDE_QUERY` — default
+- `PR_EXCLUDE_QUERY`: default `-author:app/renovate` (drops Renovate PRs).
+- `ISSUE_EXCLUDE_QUERY`: default
   `-author:app/renovate -label:renovate -label:auto-generated` (drops Renovate
   and auto-generated trackers).
 
@@ -250,10 +250,10 @@ github-scout writes JSON to stdout, one line per item. A failed run looks like:
 Each signal has a stable `msg` the dashboard and any Loki ruler alert filter on.
 Every line also carries `repo`, `url`, and `created_at`:
 
-- `workflow run` (event-once) — `workflow`, `conclusion`, `branch`, `event`, `run_number`, `run_id`
-- `open pull request` (snapshot) — `number`, `title`, `author`, `draft`
-- `open issue` (snapshot) — `number`, `title`, `author`, `labels`
-- `code scanning alert` (snapshot) — `number`, `rule`, `severity`, `tool`
+- `workflow run` (event-once): `workflow`, `conclusion`, `branch`, `event`, `run_number`, `run_id`
+- `open pull request` (snapshot): `number`, `title`, `author`, `draft`
+- `open issue` (snapshot): `number`, `title`, `author`, `labels`
+- `code scanning alert` (snapshot): `number`, `rule`, `severity`, `tool`
 
 The `conclusion` is any completed-run outcome (`success`, `failure`,
 `timed_out`, `startup_failure`, `cancelled`, `skipped`, or `neutral`); the
@@ -303,7 +303,7 @@ plain logs, you can also write a Loki ruler alert
 
 A marker file at `/tmp/.healthy` is written after each scan whose repo discovery
 succeeded, and cleared otherwise. The `health` subcommand
-(`/github-scout health`) checks the marker and exits non-zero when unhealthy —
+(`/github-scout health`) checks the marker and exits non-zero when unhealthy;
 this is the container's `HEALTHCHECK`, so no HTTP port or shell is needed on the
 distroless image. The container starts unhealthy and flips healthy after the
 first successful scan. Per-repo run-list failures are tolerated (logged; the
@@ -314,11 +314,11 @@ the container unhealthy.
 
 - **Distroless, rootless, no shell.** Runs as `nonroot` on
   `gcr.io/distroless/static` with no package manager or shell to exploit.
-- **No listening port.** There is no HTTP server — nothing to reach from the
+- **No listening port.** There is no HTTP server; nothing to reach from the
   network. Output is stdout; health is a file marker.
 - **Minimal state on tmpfs.** The only filesystem writes are the `/tmp/.healthy`
   marker and a small `/tmp/seen-runs.json` dedup file, both on a
-  `noexec,nosuid,nodev` tmpfs — no database, no persistent volume.
+  `noexec,nosuid,nodev` tmpfs; no database, no persistent volume.
 - **Minimal supply chain.** No non-`cplieger` runtime dependencies; the
   `cplieger` `httpx` and `health` libraries provide retry/backoff and the health
   probe. Response bodies are capped with `io.LimitReader`; URL path segments
@@ -371,9 +371,9 @@ version for reproducibility.
 | ------------------ | ----------------------------------------------------------------- |
 | golang             | [Go](https://hub.docker.com/_/golang)                             |
 | Distroless static  | [Distroless](https://github.com/GoogleContainerTools/distroless)  |
-| cplieger/httpx     | [httpx](https://github.com/cplieger/httpx) — retry/backoff client |
-| cplieger/health    | [health](https://github.com/cplieger/health) — file-marker probe  |
-| pgregory.net/rapid | [rapid](https://pkg.go.dev/pgregory.net/rapid) — tests only       |
+| cplieger/httpx     | [httpx](https://github.com/cplieger/httpx), retry/backoff client  |
+| cplieger/health    | [health](https://github.com/cplieger/health), file-marker probe   |
+| pgregory.net/rapid | [rapid](https://pkg.go.dev/pgregory.net/rapid), tests only        |
 
 ## Credits
 
@@ -381,7 +381,7 @@ An original tool building on the
 [GitHub REST API](https://docs.github.com/en/rest). The API-client design (auth
 headers, the API-version pin, page-count pagination) follows patterns from the
 MIT-licensed [githubexporter/github-exporter](https://github.com/githubexporter/github-exporter)
-and [xrstf/github_exporter](https://github.com/xrstf/github_exporter) — no code
+and [xrstf/github_exporter](https://github.com/xrstf/github_exporter). No code
 was copied verbatim; see [NOTICE](NOTICE) for attribution.
 
 ## Contributing
