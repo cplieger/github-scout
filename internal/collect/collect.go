@@ -35,7 +35,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/cplieger/atomicfile"
+	"github.com/cplieger/atomicfile/v2"
 	"github.com/cplieger/github-scout/internal/model"
 )
 
@@ -327,7 +327,7 @@ func (c *Collector) saveState() {
 		c.logger.Warn("dedup state marshal failed", "error", err)
 		return
 	}
-	if err := atomicfile.WriteFile(context.Background(), c.statePath, data); err != nil {
+	if _, err := atomicfile.WriteFile(context.Background(), c.statePath, data, atomicfile.WithLogger(c.logger)); err != nil {
 		c.logger.Warn("dedup state save failed", "path", c.statePath, "error", err)
 	}
 }

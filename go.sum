@@ -1,5 +1,4 @@
-github.com/cplieger/atomicfile v1.2.0 h1:EootDaL3Y4yjxTQiImcgmUXI+E8qtIR0jXDfHxfEZGo=
-github.com/cplieger/atomicfile v1.2.0/go.mod h1:V9XmBWRC+keTJQk7I4pMGNXJBt5MMcoXrZUFKQR6PnE=
+github.com/cplieger/atomicfile/v2 v2.0.3 h1:dC17MTgOoazaNyJEel60411aYYC9EWr+92Ho6w62dZU=
 github.com/cplieger/atomicfile/v2 v2.0.3/go.mod h1:KBWqpUfvJAbxQxoJNEje4oRe78iLGIjYZkbPYGjzxV4=
 github.com/cplieger/health v1.1.3 h1:QmTkK2sH5IPSAxAQGPC974jHVO3rGaqwekf+omQ20E4=
 github.com/cplieger/health v1.1.3/go.mod h1:INjkN9qJnR14X5AFqX6ymFaHvx51djYgk2oQb/gJ9u8=
