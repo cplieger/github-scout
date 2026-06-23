@@ -2,20 +2,33 @@
   "title": "GitHub Scout",
   "uid": "github-scout",
   "description": "Cross-repo GitHub work from github-scout: open pull requests, open issues, and code-scanning alerts (current state), plus recent failed Actions runs. Every row links straight to GitHub. Only what needs a look; no vanity stats.",
-  "tags": ["github", "ci", "actions", "pull-requests", "issues", "security"],
+  "tags": [
+    "github",
+    "ci",
+    "actions",
+    "pull-requests",
+    "issues",
+    "security"
+  ],
   "timezone": "browser",
   "refresh": "5m",
   "schemaVersion": 42,
-  "version": 5,
-  "time": { "from": "now-48h", "to": "now" },
+  "version": 13,
+  "time": {
+    "from": "now-48h",
+    "to": "now"
+  },
   "templating": {
     "list": [
       {
         "name": "datasource",
         "type": "datasource",
         "query": "loki",
-        "current": { "text": "Loki", "value": "loki" },
-        "hide": 0
+        "current": {
+          "text": "Loki",
+          "value": "loki"
+        },
+        "hide": 2
       },
       {
         "name": "window",
@@ -23,8 +36,18 @@
         "label": "Snapshot window",
         "description": "How far back to read the latest snapshot of open PRs / issues / alerts. Must be >= SCAN_INTERVAL (github-scout runs a 15m internal timer); 30m gives 2x headroom so one slow or skipped scan does not blank the snapshot. Every open item is re-emitted each scan and this window keeps only the most recent one. The time picker only affects the failed-runs panels.",
         "query": "30m",
-        "current": { "selected": true, "text": "30m", "value": "30m" },
-        "options": [ { "selected": true, "text": "30m", "value": "30m" } ],
+        "current": {
+          "selected": true,
+          "text": "30m",
+          "value": "30m"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "30m",
+            "value": "30m"
+          }
+        ],
         "hide": 2,
         "skipUrlSync": false
       }
@@ -35,7 +58,12 @@
       "id": 1,
       "title": "At a glance",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "collapsed": false
     },
     {
@@ -43,23 +71,51 @@
       "title": "Open PRs",
       "description": "Pull requests open across all repos right now (most recent scan). Renovate PRs are excluded by github-scout. Click into the table below to review.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 1 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "noValue": "0",
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "yellow", "value": 5 },
-            { "color": "red", "value": 15 }
-          ]}
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "colorMode": "background",
         "graphMode": "none",
         "textMode": "value"
@@ -67,7 +123,10 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
           "expr": "count(count by (repo, number) (count_over_time({container=\"github-scout\"} | json | msg=`open pull request` [$window])))",
           "queryType": "instant"
         }
@@ -78,23 +137,51 @@
       "title": "Open Issues",
       "description": "Issues open across all repos right now (most recent scan). Renovate and auto-generated trackers are excluded by github-scout.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 1 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "noValue": "0",
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "yellow", "value": 5 },
-            { "color": "red", "value": 20 }
-          ]}
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "colorMode": "background",
         "graphMode": "none",
         "textMode": "value"
@@ -102,7 +189,10 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
           "expr": "count(count by (repo, number) (count_over_time({container=\"github-scout\"} | json | msg=`open issue` [$window])))",
           "queryType": "instant"
         }
@@ -111,25 +201,53 @@
     {
       "id": 12,
       "title": "Code Scanning Alerts",
-      "description": "Open CodeQL / code-scanning alerts across all repos right now. Any open alert is worth a look; details and severity in the table below.",
+      "description": "Open CodeQL / code-scanning alerts across all repos right now. Any open alert is worth a look; details and severity in the table below. A 0 here means 'no open alerts' ONLY when the latest scan was healthy — check the Scan Integrity tile, because a degraded scan can report 0 simply because it could not read code scanning.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 1 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "noValue": "0",
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "yellow", "value": 1 },
-            { "color": "red", "value": 5 }
-          ]}
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "colorMode": "background",
         "graphMode": "none",
         "textMode": "value"
@@ -137,7 +255,10 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
           "expr": "count(count by (repo, number) (count_over_time({container=\"github-scout\"} | json | msg=`code scanning alert` [$window])))",
           "queryType": "instant"
         }
@@ -148,23 +269,51 @@
       "title": "Failed CI runs (range)",
       "description": "Distinct failed / timed-out / startup-failed Actions runs in the selected time range, deduplicated by run ID. Unlike the other tiles, this one follows the time picker. Non-zero means CI broke somewhere; the table below has the links.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 1 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "noValue": "0",
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "green", "value": null },
-            { "color": "orange", "value": 1 },
-            { "color": "red", "value": 10 }
-          ]}
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "colorMode": "background",
         "graphMode": "none",
         "textMode": "value"
@@ -172,7 +321,10 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
           "expr": "count(count by (run_id) (count_over_time({container=\"github-scout\"} |= `workflow run` | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__range])))",
           "queryType": "instant"
         }
@@ -182,7 +334,12 @@
       "id": 2,
       "title": "Open work (act on these)",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "collapsed": false
     },
     {
@@ -190,54 +347,239 @@
       "title": "Open Pull Requests",
       "description": "Every open PR across all repos as of the most recent scan (last $window). Click the Link column to review on GitHub. Renovate PRs are excluded by github-scout. Filter by repo or author with the column headers; sorted newest first.",
       "type": "table",
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 6 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "filterable": true } },
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Created" },
+            "matcher": {
+              "id": "byName",
+              "options": "Created"
+            },
             "properties": [
-              { "id": "unit", "value": "dateTimeFromNow" },
-              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
-              { "id": "color", "value": { "mode": "continuous-RdYlGr" } }
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-RdYlGr"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Draft" },
+            "matcher": {
+              "id": "byName",
+              "options": "Draft"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-              { "id": "mappings", "value": [ { "type": "value", "options": {
-                "true": { "text": "draft", "color": "yellow", "index": 0 },
-                "false": { "text": "ready", "color": "green", "index": 1 }
-              } } ] }
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "true": {
+                        "text": "draft",
+                        "color": "yellow",
+                        "index": 0
+                      },
+                      "false": {
+                        "text": "ready",
+                        "color": "green",
+                        "index": 1
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 80
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Link" },
-            "properties": [ { "id": "links", "value": [ { "title": "Open PR on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
+            "matcher": {
+              "id": "byName",
+              "options": "Link"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open PR on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".+",
+                      "result": {
+                        "text": "Open ↗",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Repo"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "#"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 55
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Author"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Title"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 600
+              }
+            ]
           }
         ]
       },
-      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Created", "desc": true } ] },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Created",
+            "desc": true
+          }
+        ]
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
           "expr": "count by (repo, number, title, author, draft, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`open pull request` [$window]))",
           "queryType": "instant"
         }
       ],
       "transformations": [
-        { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "created_at", "destinationType": "time" } ] } },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "created_at",
+                "destinationType": "time"
+              }
+            ]
+          }
+        },
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true, "Value": true },
-            "indexByName": { "created_at": 0, "repo": 1, "number": 2, "title": 3, "author": 4, "draft": 5, "url": 6 },
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "Value #A": true
+            },
+            "indexByName": {
+              "url": 0,
+              "created_at": 1,
+              "repo": 2,
+              "number": 3,
+              "title": 4,
+              "author": 5,
+              "draft": 6
+            },
             "renameByName": {
-              "created_at": "Created", "repo": "Repo", "number": "#", "title": "Title",
-              "author": "Author", "draft": "Draft", "url": "Link"
+              "created_at": "Created",
+              "repo": "Repo",
+              "number": "#",
+              "title": "Title",
+              "author": "Author",
+              "draft": "Draft",
+              "url": "Link"
             }
           }
         }
@@ -248,44 +590,213 @@
       "title": "Open Issues",
       "description": "Every open issue across all repos as of the most recent scan (last $window). Click the Link column to triage on GitHub. Renovate and auto-generated (gremlins) trackers are excluded by github-scout. Sorted newest first.",
       "type": "table",
-      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 15 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 15
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "filterable": true } },
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Created" },
+            "matcher": {
+              "id": "byName",
+              "options": "Created"
+            },
             "properties": [
-              { "id": "unit", "value": "dateTimeFromNow" },
-              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
-              { "id": "color", "value": { "mode": "continuous-RdYlGr" } }
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-RdYlGr"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Link" },
-            "properties": [ { "id": "links", "value": [ { "title": "Open issue on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
+            "matcher": {
+              "id": "byName",
+              "options": "Link"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open issue on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".+",
+                      "result": {
+                        "text": "Open ↗",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Repo"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "#"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 55
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Author"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Labels"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Title"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 530
+              }
+            ]
           }
         ]
       },
-      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Created", "desc": true } ] },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Created",
+            "desc": true
+          }
+        ]
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
           "expr": "count by (repo, number, title, author, labels, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`open issue` [$window]))",
           "queryType": "instant"
         }
       ],
       "transformations": [
-        { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "created_at", "destinationType": "time" } ] } },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "created_at",
+                "destinationType": "time"
+              }
+            ]
+          }
+        },
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true, "Value": true },
-            "indexByName": { "created_at": 0, "repo": 1, "number": 2, "title": 3, "author": 4, "labels": 5, "url": 6 },
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "Value #A": true
+            },
+            "indexByName": {
+              "url": 0,
+              "created_at": 1,
+              "repo": 2,
+              "number": 3,
+              "title": 4,
+              "author": 5,
+              "labels": 6
+            },
             "renameByName": {
-              "created_at": "Created", "repo": "Repo", "number": "#", "title": "Title",
-              "author": "Author", "labels": "Labels", "url": "Link"
+              "created_at": "Created",
+              "repo": "Repo",
+              "number": "#",
+              "title": "Title",
+              "author": "Author",
+              "labels": "Labels",
+              "url": "Link"
             }
           }
         }
@@ -296,56 +807,245 @@
       "title": "Code Scanning Alerts",
       "description": "Open CodeQL / code-scanning alerts across all repos as of the most recent scan (last $window). Click the Link column to investigate on GitHub. Severity is GitHub's security severity; repos without code scanning are silently skipped.",
       "type": "table",
-      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 24
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "filterable": true } },
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Created" },
+            "matcher": {
+              "id": "byName",
+              "options": "Created"
+            },
             "properties": [
-              { "id": "unit", "value": "dateTimeFromNow" },
-              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "gradient" } },
-              { "id": "color", "value": { "mode": "continuous-RdYlGr" } }
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background",
+                  "mode": "gradient"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-RdYlGr"
+                }
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Severity" },
+            "matcher": {
+              "id": "byName",
+              "options": "Severity"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-              { "id": "mappings", "value": [ { "type": "value", "options": {
-                "critical": { "color": "dark-red", "index": 0 },
-                "high": { "color": "red", "index": 1 },
-                "medium": { "color": "orange", "index": 2 },
-                "low": { "color": "yellow", "index": 3 }
-              } } ] }
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "critical": {
+                        "color": "dark-red",
+                        "index": 0
+                      },
+                      "high": {
+                        "color": "red",
+                        "index": 1
+                      },
+                      "medium": {
+                        "color": "orange",
+                        "index": 2
+                      },
+                      "low": {
+                        "color": "yellow",
+                        "index": 3
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Link" },
-            "properties": [ { "id": "links", "value": [ { "title": "Open alert on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
+            "matcher": {
+              "id": "byName",
+              "options": "Link"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open alert on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".+",
+                      "result": {
+                        "text": "Open ↗",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Repo"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "#"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 55
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Tool"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 85
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Rule"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 605
+              }
+            ]
           }
         ]
       },
-      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Created", "desc": true } ] },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Created",
+            "desc": true
+          }
+        ]
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
           "expr": "count by (repo, number, rule, severity, tool, url, created_at) (count_over_time({container=\"github-scout\"} | json | msg=`code scanning alert` [$window]))",
           "queryType": "instant"
         }
       ],
       "transformations": [
-        { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "created_at", "destinationType": "time" } ] } },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "created_at",
+                "destinationType": "time"
+              }
+            ]
+          }
+        },
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true, "Value": true },
-            "indexByName": { "created_at": 0, "repo": 1, "number": 2, "rule": 3, "severity": 4, "tool": 5, "url": 6 },
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "Value #A": true
+            },
+            "indexByName": {
+              "url": 0,
+              "created_at": 1,
+              "repo": 2,
+              "number": 3,
+              "rule": 4,
+              "severity": 5,
+              "tool": 6
+            },
             "renameByName": {
-              "created_at": "Created", "repo": "Repo", "number": "#", "rule": "Rule",
-              "severity": "Severity", "tool": "Tool", "url": "Link"
+              "created_at": "Created",
+              "repo": "Repo",
+              "number": "#",
+              "rule": "Rule",
+              "severity": "Severity",
+              "tool": "Tool",
+              "url": "Link"
             }
           }
         }
@@ -355,7 +1055,12 @@
       "id": 3,
       "title": "Recent CI failures",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
       "collapsed": false
     },
     {
@@ -363,56 +1068,243 @@
       "title": "Failed Runs",
       "description": "Failed / timed-out / startup-failed Actions runs across all repos in the selected time range, deduplicated by run ID, newest first. Click the Link column to open the run on GitHub. Successful runs are deliberately omitted; this view is for what broke. github-scout looks back LOOKBACK_HOURS (default 72h), so set the picker within that.",
       "type": "table",
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 33 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 33
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
-        "defaults": { "custom": { "filterable": true } },
+        "defaults": {
+          "custom": {
+            "filterable": false
+          }
+        },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Created" },
+            "matcher": {
+              "id": "byName",
+              "options": "Created"
+            },
             "properties": [
-              { "id": "unit", "value": "dateTimeFromNow" }
+              {
+                "id": "unit",
+                "value": "dateTimeFromNow"
+              },
+              {
+                "id": "custom.width",
+                "value": 120
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Conclusion" },
+            "matcher": {
+              "id": "byName",
+              "options": "Conclusion"
+            },
             "properties": [
-              { "id": "custom.cellOptions", "value": { "type": "color-background" } },
-              { "id": "mappings", "value": [ { "type": "value", "options": {
-                "failure": { "color": "red", "index": 0 },
-                "timed_out": { "color": "orange", "index": 1 },
-                "startup_failure": { "color": "dark-red", "index": 2 }
-              } } ] }
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "failure": {
+                        "color": "red",
+                        "index": 0
+                      },
+                      "timed_out": {
+                        "color": "orange",
+                        "index": 1
+                      },
+                      "startup_failure": {
+                        "color": "dark-red",
+                        "index": 2
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 110
+              }
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Link" },
-            "properties": [ { "id": "links", "value": [ { "title": "Open run on GitHub", "url": "${__value.text}", "targetBlank": true } ] } ]
+            "matcher": {
+              "id": "byName",
+              "options": "Link"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "Open run on GitHub",
+                    "url": "${__value.raw}",
+                    "targetBlank": true
+                  }
+                ]
+              },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "regex",
+                    "options": {
+                      "pattern": ".+",
+                      "result": {
+                        "text": "Open ↗",
+                        "index": 0
+                      }
+                    }
+                  }
+                ]
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              },
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Repo"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 200
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Branch"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Trigger"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "#"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 55
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Workflow"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 420
+              }
+            ]
           }
         ]
       },
-      "options": { "showHeader": true, "cellHeight": "sm", "sortBy": [ { "displayName": "Created", "desc": true } ] },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "sortBy": [
+          {
+            "displayName": "Created",
+            "desc": true
+          }
+        ]
+      },
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
           "expr": "count by (repo, workflow, conclusion, branch, event, run_number, run_id, url, created_at) (count_over_time({container=\"github-scout\"} |= `workflow run` | json | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__range]))",
           "queryType": "instant"
         }
       ],
       "transformations": [
-        { "id": "convertFieldType", "options": { "conversions": [ { "targetField": "created_at", "destinationType": "time" } ] } },
+        {
+          "id": "convertFieldType",
+          "options": {
+            "conversions": [
+              {
+                "targetField": "created_at",
+                "destinationType": "time"
+              }
+            ]
+          }
+        },
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true, "Value": true, "run_id": true },
+            "excludeByName": {
+              "Time": true,
+              "Value": true,
+              "Value #A": true,
+              "run_id": true
+            },
             "indexByName": {
-              "created_at": 0, "repo": 1, "workflow": 2, "conclusion": 3,
-              "branch": 4, "event": 5, "run_number": 6, "url": 7
+              "url": 0,
+              "created_at": 1,
+              "repo": 2,
+              "workflow": 3,
+              "conclusion": 4,
+              "branch": 5,
+              "event": 6,
+              "run_number": 7
             },
             "renameByName": {
-              "created_at": "Created", "repo": "Repo", "workflow": "Workflow", "conclusion": "Conclusion",
-              "branch": "Branch", "event": "Trigger", "run_number": "#", "url": "Link"
+              "created_at": "Created",
+              "repo": "Repo",
+              "workflow": "Workflow",
+              "conclusion": "Conclusion",
+              "branch": "Branch",
+              "event": "Trigger",
+              "run_number": "#",
+              "url": "Link"
             }
           }
         }
@@ -422,34 +1314,85 @@
       "id": 4,
       "title": "Scout health",
       "type": "row",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 43 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
       "collapsed": false
     },
     {
       "id": 40,
       "title": "Scout Status",
-      "description": "Whether github-scout completed a scan in the last hour (it runs every 15m). STALLED means the scanner is wedged or the container is down; investigate it, because every panel above then goes stale and silently reads empty. github-scout's own errors (bad token, rate limit) also surface on the Live Operations error-rate panel.",
+      "description": "Whether github-scout completed a scan in the last hour (it runs every 15m). STALLED means the scanner is wedged or the container is down; investigate it, because every panel above then goes stale and silently reads empty. A scan that completes but could not read every signal shows on the Scan Integrity tile beside this one; github-scout's own errors also surface on the Live Operations error-rate panel.",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 44 },
-      "datasource": { "type": "loki", "uid": "${datasource}" },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 44
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "noValue": "STALLED",
           "mappings": [
-            { "type": "range", "options": { "from": 1, "to": 1000000, "result": { "text": "RUNNING", "color": "green", "index": 0 } } },
-            { "type": "special", "options": { "match": "null", "result": { "text": "STALLED", "color": "red", "index": 1 } } }
+            {
+              "type": "range",
+              "options": {
+                "from": 1,
+                "to": 1000000,
+                "result": {
+                  "text": "RUNNING",
+                  "color": "green",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "STALLED",
+                  "color": "red",
+                  "index": 1
+                }
+              }
+            }
           ],
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [
-            { "color": "red", "value": null },
-            { "color": "green", "value": 1 }
-          ]}
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "colorMode": "background",
         "graphMode": "none",
         "textMode": "value"
@@ -457,8 +1400,98 @@
       "targets": [
         {
           "refId": "A",
-          "datasource": { "type": "loki", "uid": "${datasource}" },
-          "expr": "sum(count_over_time({container=\"github-scout\"} | json | msg=`scan complete` [1h]))",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(count_over_time({container=\"github-scout\"} |= `scan complete` | json | msg=`scan complete` [1h]))",
+          "queryType": "instant"
+        }
+      ]
+    },
+    {
+      "id": 41,
+      "title": "Scan Integrity",
+      "description": "DEGRADED (red) when github-scout logged an ERROR within the snapshot window: a scan that could not run, e.g. repo discovery failed (a dead or rate-limited token, or a transient network timeout reaching GitHub; this also marks the container unhealthy). Routine per-repo WARNs are intentionally excluded so the tile is not permanently red, in particular code scanning listing failed (a 403 for repos without GitHub Advanced Security, which is expected). OK (green) when there are no errors in the window; liveness is the Scout Status tile beside it. Check the github-scout container logs for the ERROR detail.",
+      "type": "stat",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 44
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "${datasource}"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "OK",
+          "mappings": [
+            {
+              "type": "range",
+              "options": {
+                "from": 1,
+                "to": 1000000,
+                "result": {
+                  "text": "DEGRADED",
+                  "color": "red",
+                  "index": 0
+                }
+              }
+            },
+            {
+              "type": "special",
+              "options": {
+                "match": "null",
+                "result": {
+                  "text": "OK",
+                  "color": "green",
+                  "index": 1
+                }
+              }
+            }
+          ],
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "loki",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(count_over_time({container=\"github-scout\"} | json | level=`ERROR` [$window]))",
           "queryType": "instant"
         }
       ]
