@@ -1,9 +1,13 @@
 // Package model holds the pure data types describing the GitHub signals
 // github-scout surfaces. Types here carry no behavior beyond JSON struct
-// tags. The tags define the structured-log field names that Loki indexes
-// and the Grafana dashboard queries, so they are a contract: renaming a
-// tag renames a Loki field and silently breaks dashboard panels and any
-// Loki ruler alert. Treat tag changes as a behavior change, not a refactor.
+// tags. The structs are never JSON-marshaled on the emit path, though: each
+// signal reaches Loki as a slog.Info line whose field names are the literal
+// key strings passed in internal/collect, so those keys — not these tags —
+// are the Loki field-name contract. Renaming a tag here does NOT rename a
+// Loki field; renaming a slog key in internal/collect does, and silently
+// breaks dashboard panels and any Loki ruler alert. The tags mirror the slog
+// keys for documentation and must be kept in sync with them;
+// TestLogKeysMatchModelTags (internal/collect) fails the build if they drift.
 //
 // Two emission models are used (see internal/collect):
 //
@@ -21,8 +25,31 @@
 package model
 
 import (
+	"errors"
 	"slices"
 	"time"
+)
+
+// ErrNoCodeScanning marks a repo that has no code-scanning analyses — GitHub
+// returns 404 when the feature was never enabled (no GitHub Advanced Security)
+// or no CodeQL run has completed. It is a benign "no data" outcome, NOT a read
+// failure: the collector counts such a repo as neither readable nor blind, so
+// it never dilutes the "code scanning blind across every repo" escalation.
+var ErrNoCodeScanning = errors.New("repo has no code-scanning analyses")
+
+// ErrTokenInvalid and ErrRateLimited mark the two SYSTEMIC collection failures:
+// classes that poison every call in a scan, so any signal's reported 0 this
+// scan is unverified rather than confirmed empty. The GitHub client (the
+// adapter) translates the transport status into these domain sentinels — 401
+// to ErrTokenInvalid, 429 to ErrRateLimited — exactly as it maps 404 to
+// ErrNoCodeScanning, so internal/collect classifies on meaning and never
+// imports the HTTP transport's error types. A 403 is deliberately NOT mapped
+// here: on code scanning it usually means one private repo lacks GitHub
+// Advanced Security, so it is a per-repo failure that escalates only via the
+// "blind for every repo" path, not a fleet-wide one.
+var (
+	ErrTokenInvalid = errors.New("github token rejected (401)")
+	ErrRateLimited  = errors.New("github rate limit exceeded (429)")
 )
 
 // Repo is a GitHub repository discovered for an owner. Only the fields
@@ -49,7 +76,7 @@ func (r Repo) FullName() string { return r.Owner + "/" + r.Name }
 // event-once signal. github-scout emits every completed run once,
 // whatever its conclusion, so a plain log count equals the number of
 // distinct runs and the Conclusion field drives both the actionable
-// failures view (Conclusion in FailureConclusions) and the failure-rate
+// failures view (Conclusion in failureConclusions) and the failure-rate
 // panel. Each failed run is a build / release / scheduled job that needs a
 // human to look at it.
 type WorkflowRun struct {
@@ -106,7 +133,7 @@ type CodeScanningAlert struct {
 	Number    int64     `json:"number"`
 }
 
-// FailureConclusions is the set of run conclusions github-scout treats as
+// failureConclusions is the set of run conclusions github-scout treats as
 // actionable failures. It classifies a WorkflowRun's Conclusion: the
 // collector counts these as failures in its scan summary, and the
 // dashboard filters the all-runs stream by them for the failures view and
@@ -114,12 +141,12 @@ type CodeScanningAlert struct {
 // rest of the denominator). success/neutral/skipped/cancelled are not
 // failures — a cancelled run is usually a human superseding it. Ordering
 // is stable for deterministic logs and tests.
-var FailureConclusions = []string{"failure", "timed_out", "startup_failure"}
+var failureConclusions = []string{"failure", "timed_out", "startup_failure"}
 
 // IsFailureConclusion reports whether conclusion is one github-scout treats
-// as an actionable failure (i.e. is in FailureConclusions). It is the
+// as an actionable failure (i.e. is in failureConclusions). It is the
 // single definition of "failed" shared by the collector's summary counts
 // and any caller classifying a WorkflowRun.
 func IsFailureConclusion(conclusion string) bool {
-	return slices.Contains(FailureConclusions, conclusion)
+	return slices.Contains(failureConclusions, conclusion)
 }

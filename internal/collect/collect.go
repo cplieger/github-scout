@@ -33,6 +33,7 @@ import (
 	"errors"
 	"io/fs"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/cplieger/atomicfile/v2"
@@ -120,64 +121,105 @@ func New(d *Deps) *Collector {
 	return c
 }
 
-// Scan runs one full cycle and returns whether it was healthy. Health
-// contract: true if repo discovery succeeded (the per-signal collectors
-// tolerate partial failure, logging a warning and continuing); false only
-// if discovery itself failed (bad token, rate limit), since without the
-// repo list there is nothing to scan.
+// Scan runs one full cycle and returns whether it was healthy. Health is a
+// LIVENESS verdict: true when repo discovery succeeded, false only when it
+// failed (bad token, rate limit) — the one condition a restart might clear.
+// Per-signal collection failures deliberately do NOT flip health: a restart
+// cannot fix a missing token scope or a sustained rate limit, so flapping the
+// container would be noise. Instead the scan reports DATA INTEGRITY on its own
+// channel via scanIntegrity. A signal that could not be read makes its reported
+// "0" mean "could not check", not "nothing there" — and for code scanning that
+// is a security false-negative — so "scan complete" carries `errors`,
+// `degraded`, and `failed_signals`, and a SYSTEMIC failure (a rejected token or
+// rate limit, or a signal blind across every repo) is escalated to a distinct
+// ERROR-level "scan degraded" line that the fleet error panel and the Loki
+// ruler alert key on.
 func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 	start := c.now()
-	cutoff := start.Add(-c.lookback)
+	// Round the cutoff down to a whole second: GitHub run timestamps are
+	// second-precision, so a sub-second cutoff could prune a run the
+	// `created>=` server filter still returns. A second-aligned boundary keeps
+	// prune and the query in agreement (see TestPruneBoundaryRetainsRunsAtCutoff).
+	cutoff := start.Add(-c.lookback).Truncate(time.Second)
 
 	repos, err := c.client.ListRepos(ctx, c.owner)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			// SIGTERM (or a deadline) landed during discovery: a clean shutdown,
+			// not a token failure. Mirror the per-signal collectors, which treat
+			// cancellation as outcomeShutdown — don't log an ERROR "repo discovery
+			// failed" (which reads like a dead token and bumps the fleet error
+			// panel) and don't flip health, since a restart has nothing to fix.
+			c.logger.Debug("scan interrupted", "phase", "repo discovery")
+			return true
+		}
 		c.logger.Error("repo discovery failed", "owner", c.owner, "error", err)
 		return false
 	}
 	c.logger.Info("scanning", "owner", c.owner, "repos", len(repos), "since", cutoff.Format(time.RFC3339))
 
-	openPRs := c.collectPRs(ctx)
-	openIssues := c.collectIssues(ctx)
+	var ig scanIntegrity
+	ig.recordDiscovery(len(repos))
+	openPRs, prErr := c.collectPRs(ctx)
+	ig.recordPRs(prErr)
+	openIssues, issErr := c.collectIssues(ctx)
+	ig.recordIssues(issErr)
 
 	scanned, skipped, newRuns, newFailures, alerts := 0, 0, 0, 0, 0
 	for i := range repos {
+		if ctx.Err() != nil {
+			break // shutdown (SIGTERM): stop scanning remaining repos cleanly
+		}
 		repo := &repos[i]
-		if c.exclude[repo.Name] {
+		if c.excludedName(repo.Name) {
+			c.logger.Debug("skipping excluded repo", "repo", repo.FullName())
 			skipped++
 			continue
 		}
 		scanned++
-		runs, failures := c.collectRuns(ctx, repo, cutoff)
+		runs, failures, runErr := c.collectRuns(ctx, repo, cutoff)
 		newRuns += runs
 		newFailures += failures
-		alerts += c.collectAlerts(ctx, repo)
+		ig.recordRuns(runErr)
+		a, alertErr := c.collectAlerts(ctx, repo)
+		alerts += a
+		ig.recordAlerts(alertErr)
 	}
 
 	c.prune(cutoff)
 	if c.statePath != "" {
 		c.saveState()
 	}
+
+	ig.emit(c.logger)
 	c.logger.Info("scan complete",
 		"scanned", scanned, "skipped", skipped,
 		"open_prs", openPRs, "open_issues", openIssues,
 		"code_alerts", alerts, "new_runs", newRuns, "new_failures", newFailures,
 		"tracked", len(c.seen),
+		"errors", ig.errCount(), "degraded", ig.degraded(), "failed_signals", ig.failedSignals(),
 		"duration", c.now().Sub(start).Round(time.Millisecond))
 	return true
 }
 
 // collectPRs emits the current open-PR snapshot (cross-repo, one query) and
-// returns the count surfaced. Excluded repos are filtered client-side.
-func (c *Collector) collectPRs(ctx context.Context) int {
+// returns the count surfaced plus any error from the search call, so Scan can
+// fold a failed PR search into the scan's data-integrity verdict. Excluded
+// repos are filtered client-side.
+func (c *Collector) collectPRs(ctx context.Context) (int, error) {
 	prs, err := c.client.SearchOpenPRs(ctx, c.owner, c.prExclude)
 	if err != nil {
-		c.logger.Warn("open PR search failed", "error", err)
-		return 0
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			c.logger.Debug("scan interrupted", "search", "open pull requests")
+		} else {
+			c.logger.Warn("open PR search failed", "error", err)
+		}
+		return 0, err
 	}
 	n := 0
 	for i := range prs {
 		pr := &prs[i]
-		if c.excludedRepo(pr.Repo) {
+		if !c.keep(pr.Repo) {
 			continue
 		}
 		c.logger.Info("open pull request",
@@ -186,21 +228,25 @@ func (c *Collector) collectPRs(ctx context.Context) int {
 			"created_at", pr.CreatedAt.UTC().Format(time.RFC3339))
 		n++
 	}
-	return n
+	return n, nil
 }
 
 // collectIssues emits the current open-issue snapshot (cross-repo, one
-// query) and returns the count surfaced.
-func (c *Collector) collectIssues(ctx context.Context) int {
+// query) and returns the count surfaced plus any error from the search call.
+func (c *Collector) collectIssues(ctx context.Context) (int, error) {
 	issues, err := c.client.SearchOpenIssues(ctx, c.owner, c.issueExclude)
 	if err != nil {
-		c.logger.Warn("open issue search failed", "error", err)
-		return 0
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			c.logger.Debug("scan interrupted", "search", "open issues")
+		} else {
+			c.logger.Warn("open issue search failed", "error", err)
+		}
+		return 0, err
 	}
 	n := 0
 	for i := range issues {
 		is := &issues[i]
-		if c.excludedRepo(is.Repo) {
+		if !c.keep(is.Repo) {
 			continue
 		}
 		c.logger.Info("open issue",
@@ -209,22 +255,29 @@ func (c *Collector) collectIssues(ctx context.Context) int {
 			"created_at", is.CreatedAt.UTC().Format(time.RFC3339))
 		n++
 	}
-	return n
+	return n, nil
 }
 
 // collectRuns emits newly-seen completed runs for repo (event-once) and
-// returns how many runs were new this scan and how many of those were
-// failures. Every completed run is emitted once as msg="workflow run" with
-// its conclusion, so the dashboard filters that one stream for the failures
-// view and computes the failure rate — no per-conclusion fan-out needed.
-func (c *Collector) collectRuns(ctx context.Context, repo *model.Repo, cutoff time.Time) (newRuns, newFailures int) {
+// returns how many runs were new this scan, how many of those were failures,
+// and any error from the list call (so Scan can fold a per-repo runs failure
+// into the integrity verdict). Every completed run is emitted once as
+// msg="workflow run" with its conclusion, so the dashboard filters that one
+// stream for the failures view and computes the failure rate — no
+// per-conclusion fan-out needed.
+func (c *Collector) collectRuns(ctx context.Context, repo *model.Repo, cutoff time.Time) (newRuns, newFailures int, err error) {
 	runs, err := c.client.ListRuns(ctx, *repo, cutoff)
 	if err != nil {
-		c.logger.Warn("partial failure listing runs", "repo", repo.FullName(), "error", err)
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			c.logger.Debug("scan interrupted", "repo", repo.FullName())
+		} else {
+			c.logger.Warn("partial failure listing runs", "repo", repo.FullName(), "error", err)
+		}
 	}
 	for i := range runs {
 		run := &runs[i]
 		if _, ok := c.seen[run.RunID]; ok {
+			c.logger.Debug("run already seen", "repo", run.Repo, "run_id", run.RunID)
 			continue
 		}
 		c.seen[run.RunID] = run.CreatedAt
@@ -238,17 +291,29 @@ func (c *Collector) collectRuns(ctx context.Context, repo *model.Repo, cutoff ti
 			newFailures++
 		}
 	}
-	return newRuns, newFailures
+	return newRuns, newFailures, err
 }
 
 // collectAlerts emits the current code-scanning-alert snapshot for repo and
-// returns the count. Repos without code scanning return no alerts (the
-// client maps 403/404 to empty), so this is silent for them.
-func (c *Collector) collectAlerts(ctx context.Context, repo *model.Repo) int {
+// returns the count plus any error. A repo that never ran code scanning yields
+// model.ErrNoCodeScanning (GitHub's 404) — a benign "no data" outcome the
+// collector stays silent on and Scan counts as neither readable nor blind. A
+// 403 (Advanced Security off, a missing token scope, or a rate limit) is a real
+// read failure surfaced as a warning, so Scan can fold a blind code-scanning
+// read into the integrity verdict rather than reporting a false zero.
+func (c *Collector) collectAlerts(ctx context.Context, repo *model.Repo) (int, error) {
 	alerts, err := c.client.ListCodeScanningAlerts(ctx, *repo)
 	if err != nil {
-		c.logger.Warn("code scanning listing failed", "repo", repo.FullName(), "error", err)
-		return 0
+		switch {
+		case errors.Is(err, model.ErrNoCodeScanning):
+			// Benign: this repo has no code scanning. Not a failure and not a
+			// readable signal — Scan's integrity verdict ignores it.
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			c.logger.Debug("scan interrupted", "repo", repo.FullName())
+		default:
+			c.logger.Warn("code scanning listing failed", "repo", repo.FullName(), "error", err)
+		}
+		return 0, err
 	}
 	for i := range alerts {
 		a := &alerts[i]
@@ -257,30 +322,36 @@ func (c *Collector) collectAlerts(ctx context.Context, repo *model.Repo) int {
 			"severity", a.Severity, "tool", a.Tool, "url", a.URL,
 			"created_at", a.CreatedAt.UTC().Format(time.RFC3339))
 	}
-	return len(alerts)
+	return len(alerts), nil
+}
+
+// keep reports whether a cross-repo search result from repoFullName should be
+// surfaced: it must belong to the configured owner (the Search API can return
+// repos outside it) and not be in the operator's exclude set. The owner-prefix
+// test is case-insensitive because GitHub's search can vary the owner's case.
+func (c *Collector) keep(repoFullName string) bool {
+	prefix := c.owner + "/"
+	return strings.HasPrefix(strings.ToLower(repoFullName), strings.ToLower(prefix)) &&
+		!c.excludedRepo(repoFullName)
 }
 
 // excludedRepo reports whether a "owner/name" full name is in the exclude
-// set (which is keyed by bare repo name).
+// set (which is keyed by bare repo name). The lookup is case-insensitive,
+// mirroring keep()'s owner test and the lowercased exclude set.
 func (c *Collector) excludedRepo(fullName string) bool {
-	if c.exclude == nil {
-		return false
-	}
 	name := fullName
-	if i := lastSlash(fullName); i != -1 {
+	if i := strings.LastIndexByte(fullName, '/'); i != -1 {
 		name = fullName[i+1:]
 	}
-	return c.exclude[name]
+	return c.excludedName(name)
 }
 
-// lastSlash returns the index of the last '/' in s, or -1.
-func lastSlash(s string) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == '/' {
-			return i
-		}
-	}
-	return -1
+// excludedName reports whether a bare repo name is in the exclude set. It
+// lowercases its argument because the set (parseExcludes) is keyed by
+// lowercased names — GitHub repo names are case-insensitive — so this is the
+// single place the read-side normalization lives.
+func (c *Collector) excludedName(name string) bool {
+	return c.exclude[strings.ToLower(name)]
 }
 
 // prune drops run dedup entries older than cutoff. The Actions query
@@ -321,13 +392,17 @@ func (c *Collector) loadState() {
 // or write failure is logged but never fails the scan (the next trigger just
 // re-emits a few runs). Called at the end of Scan only when statePath is set,
 // after prune has bounded the set to the lookback window.
+// Uses context.Background() (not the scan ctx) deliberately: Scan still runs
+// saveState after a SIGTERM breaks the repo loop, and persisting the
+// just-emitted run IDs during shutdown stops the next trigger from re-emitting
+// them — threading the cancelled ctx would abort the atomicfile write.
 func (c *Collector) saveState() {
 	data, err := json.Marshal(c.seen)
 	if err != nil {
 		c.logger.Warn("dedup state marshal failed", "error", err)
 		return
 	}
-	if _, err := atomicfile.WriteFile(context.Background(), c.statePath, data, atomicfile.WithLogger(c.logger)); err != nil {
+	if _, err := atomicfile.WriteFile(context.Background(), c.statePath, data, atomicfile.WithLogger(c.logger), atomicfile.WithNoSync()); err != nil {
 		c.logger.Warn("dedup state save failed", "path", c.statePath, "error", err)
 	}
 }

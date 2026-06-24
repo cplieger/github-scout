@@ -1,11 +1,10 @@
-package main
-
-// github-scout scans all of a GitHub owner's repositories on a schedule
-// and emits the four actionable signals — failed Actions runs, open pull
-// requests, open issues, and code-scanning alerts — as structured log
-// lines for Loki. It is the single source for a cross-repo GitHub
-// dashboard, replacing the Grafana GitHub-datasource plugin (which cannot
-// enumerate "all workflows across all repos" and has no cross-repo view).
+// Package main implements github-scout, which scans all of a GitHub
+// owner's repositories on a schedule and emits the four actionable
+// signals — failed Actions runs, open pull requests, open issues, and
+// code-scanning alerts — as structured log lines for Loki. It is the
+// single source for a cross-repo GitHub dashboard, replacing the Grafana
+// GitHub-datasource plugin (which cannot enumerate "all workflows across
+// all repos" and has no cross-repo view).
 //
 // main.go is a pure composition root: it wires config -> *http.Client ->
 // github.Client -> collect.Collector -> health.Marker. All logic lives in
@@ -23,6 +22,7 @@ package main
 // not numeric time-series, so they belong in Loki. There is no HTTP server
 // and no listening port; health is a file marker checked by the `health`
 // subcommand.
+package main
 
 import (
 	"context"
@@ -37,6 +37,7 @@ import (
 	"github.com/cplieger/github-scout/internal/collect"
 	"github.com/cplieger/github-scout/internal/config"
 	"github.com/cplieger/github-scout/internal/github"
+	"github.com/cplieger/github-scout/internal/urlsafe"
 	"github.com/cplieger/health"
 	"github.com/cplieger/httpx"
 )
@@ -52,6 +53,12 @@ import (
 const seenStatePath = "/tmp/seen-runs.json"
 
 func main() {
+	// Install the JSON handler before anything logs (including config.Load
+	// warnings) so every line is JSON on stdout; setupLogging sets the level
+	// once config is read.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout,
+		&slog.HandlerOptions{Level: logLevel})))
+
 	// CLI subcommands for the distroless image (no shell): `health` for the
 	// Docker healthcheck (checks the marker file), `trigger` for a one-shot
 	// scan driven by an external scheduler (Ofelia job-exec).
@@ -61,16 +68,19 @@ func main() {
 			health.RunProbe(health.DefaultPath)
 		case "trigger":
 			runTrigger()
+		default:
+			slog.Error("unknown subcommand", "arg", os.Args[1],
+				"valid", "health, trigger, or no argument for daemon")
+			os.Exit(2)
 		}
+		// health.RunProbe and runTrigger both terminate via os.Exit; this
+		// guard makes the invariant explicit instead of depending on those
+		// callees never returning (health is a separately versioned dependency).
+		os.Exit(0)
 	}
 
-	cfg := config.Load()
-	setupLogging(cfg.LogLevel)
-	logConfig(&cfg)
-
-	if !cfg.Valid() {
-		slog.Error("invalid configuration; need GITHUB_OWNER and GITHUB_TOKEN",
-			"owner_set", cfg.Owner != "", "token_set", cfg.Token != "")
+	cfg, valid := loadConfig()
+	if !valid {
 		os.Exit(1)
 	}
 
@@ -100,7 +110,6 @@ func main() {
 		runScheduled(ctx, cfg.ScanInterval, collector, marker)
 	}
 
-	marker.Cleanup()
 	slog.Info("shutdown complete")
 }
 
@@ -120,13 +129,8 @@ func runTrigger() {
 // /tmp and at worst re-emits the lookback window once. Open PRs / issues /
 // alerts remain pure snapshots (re-emitted every scan by design).
 func doTrigger() int {
-	cfg := config.Load()
-	setupLogging(cfg.LogLevel)
-	logConfig(&cfg)
-
-	if !cfg.Valid() {
-		slog.Error("invalid configuration; need GITHUB_OWNER and GITHUB_TOKEN",
-			"owner_set", cfg.Owner != "", "token_set", cfg.Token != "")
+	cfg, valid := loadConfig()
+	if !valid {
 		return 1
 	}
 
@@ -149,6 +153,24 @@ func doTrigger() int {
 		return 1
 	}
 	return 0
+}
+
+// loadConfig runs the startup preamble shared by the daemon (main) and the
+// one-shot trigger (doTrigger): load config, install the log level, log the
+// active config, then validate. It returns the loaded config and whether it
+// is valid; on invalid config it logs the diagnostic error and returns false,
+// leaving the abort (os.Exit vs return) to the caller.
+func loadConfig() (config.Config, bool) {
+	cfg := config.Load()
+	setupLogging(cfg.LogLevel)
+	logConfig(&cfg)
+	if !cfg.Valid() {
+		slog.Error("invalid configuration; need GITHUB_OWNER and GITHUB_TOKEN",
+			"owner_set", cfg.Owner != "", "token_set", cfg.Token != "",
+			"owner_safe", cfg.Owner == "" || urlsafe.IsSafeURLSegment(cfg.Owner))
+		return cfg, false
+	}
+	return cfg, true
 }
 
 // buildCollector wires config -> *http.Client -> github.Client ->
@@ -182,15 +204,21 @@ func runScan(ctx context.Context, collector *collect.Collector) (healthy bool) {
 	return collector.Scan(ctx)
 }
 
+// jitteredDelay returns the next poll delay: interval drawn uniformly from
+// [interval-interval/10, interval+interval/10). Extracted from runScheduled
+// so the ±10% band invariant can be property-tested in isolation.
+func jitteredDelay(interval time.Duration) time.Duration {
+	jitterMax := max(1, int(interval/5))
+	jitter := time.Duration(rand.IntN(jitterMax)) //nolint:gosec // G404: scheduling jitter, not crypto
+	return interval - interval/10 + jitter
+}
+
 // runScheduled scans on each tick of a ScanInterval timer with ±10% jitter
 // until ctx is cancelled. Jitter avoids a predictable, synchronized hammer
 // on the GitHub API across restarts.
 func runScheduled(ctx context.Context, interval time.Duration, collector *collect.Collector, marker *health.Marker) {
 	for {
-		jitterMax := max(1, int(interval/5))
-		jitter := time.Duration(rand.IntN(jitterMax)) //nolint:gosec // G404: scheduling jitter, not crypto
-		delay := interval - interval/10 + jitter
-		timer := time.NewTimer(delay)
+		timer := time.NewTimer(jitteredDelay(interval))
 
 		select {
 		case <-ctx.Done():
@@ -202,15 +230,22 @@ func runScheduled(ctx context.Context, interval time.Duration, collector *collec
 	}
 }
 
-// setupLogging configures slog. github-scout uses the JSON handler (not
-// the fleet-default text handler) deliberately: its product IS structured
-// events rendered as Grafana table columns, and workflow names / branches
-// contain spaces and slashes that JSON encodes unambiguously where logfmt
-// quoting is fragile. The homelab error-matching regex covers JSON, so
-// github-scout's own error logs are still caught by the cross-fleet panels.
+// logLevel backs the JSON handler installed at the start of main(). The JSON
+// handler (not the fleet-default text handler) is deliberate: the product IS
+// structured events rendered as Grafana table columns, and workflow names /
+// branches contain spaces and slashes that JSON encodes unambiguously where
+// logfmt quoting is fragile (the homelab error-matching regex covers JSON, so
+// github-scout's own error logs are still caught by the cross-fleet panels).
+// Installing it at the start of main() — before config.Load runs — means even
+// config-validation warnings emit as JSON on stdout, not text on stderr.
+var logLevel = new(slog.LevelVar)
+
+// setupLogging sets the configured level on logLevel, the LevelVar backing the
+// handler installed in main(). Called once by loadConfig after LOG_LEVEL is
+// read; until then the handler runs at the LevelVar default (Info), so early
+// config.Load() warnings still emit.
 func setupLogging(level slog.Level) {
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout,
-		&slog.HandlerOptions{Level: level})))
+	logLevel.Set(level)
 }
 
 // logConfig logs the active configuration at startup. The token is never

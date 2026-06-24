@@ -178,7 +178,7 @@ func TestExcludeQueriesDefaultWhenUnset(t *testing.T) {
 
 func TestExcludeQueriesOverriddenByEnv(t *testing.T) {
 	// A non-empty value is used verbatim instead of the default (exercises
-	// GetEnv's "env set" branch).
+	// getEnv's "env set" branch).
 	t.Setenv("PR_EXCLUDE_QUERY", "-author:dependabot")
 	t.Setenv("ISSUE_EXCLUDE_QUERY", "-label:wontfix")
 
@@ -279,4 +279,97 @@ func (h *countingHandler) count(msg string) int {
 		}
 	}
 	return n
+}
+
+// TestGetEnv exercises the getEnv helper directly at both branches: an
+// explicitly-empty value is treated as unset and falls back to the default,
+// and a non-empty value is returned verbatim. The Load-level tests cover the
+// PRExclude/IssueExclude wiring; this pins the helper itself.
+func TestGetEnv(t *testing.T) {
+	const key = "GITHUB_SCOUT_TEST_GETENV"
+	tests := []struct {
+		name     string
+		value    string
+		fallback string
+		want     string
+	}{
+		{name: "empty value treated as unset, returns fallback", value: "", fallback: "def", want: "def"},
+		{name: "non-empty value used verbatim", value: "actual", fallback: "def", want: "actual"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(key, tt.value)
+			if got := getEnv(key, tt.fallback); got != tt.want {
+				t.Errorf("getEnv(%q) with value %q = %q, want %q", key, tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestParseLogLevel exercises parseLogLevel directly across every switch arm
+// plus the case-insensitive (strings.ToLower) and whitespace-trimming
+// (strings.TrimSpace) handling that the Load-level TestParseLogLevels does
+// not cover. Kills any single-arm or trim/lower mutation.
+func TestParseLogLevel(t *testing.T) {
+	tests := []struct {
+		in   string
+		want slog.Level
+	}{
+		{"debug", slog.LevelDebug},
+		{"warn", slog.LevelWarn},
+		{"error", slog.LevelError},
+		{"WARN", slog.LevelWarn},
+		{" error ", slog.LevelError},
+		{"info", slog.LevelInfo},
+		{"bogus", slog.LevelInfo},
+		{"", slog.LevelInfo},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			if got := parseLogLevel(tt.in); got != tt.want {
+				t.Errorf("parseLogLevel(%q) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestScanIntervalBelowMinimumClamped pins the minScanInterval floor: a positive
+// sub-minute SCAN_INTERVAL is clamped up to minScanInterval (1m) so a too-frequent
+// scan of a multi-repo account can't exhaust GitHub's 5000 req/hour budget. The
+// existing TestClampingAndFallbacks covers negative/garbage/over-max but no
+// sub-minute case. The "exactly 1m" row is kept via the default branch, pinning
+// the strict `<` lower edge; "2m" confirms an above-floor value passes through.
+func TestScanIntervalBelowMinimumClamped(t *testing.T) {
+	tests := []struct {
+		name string
+		val  string
+		want time.Duration
+	}{
+		{"sub-minute clamps up to the floor", "30s", minScanInterval},
+		{"one second below the floor clamps", "59s", minScanInterval},
+		{"exactly at the floor is kept", "1m", minScanInterval},
+		{"above the floor is kept", "2m", 2 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("SCAN_INTERVAL", tt.val)
+			if got := Load().ScanInterval; got != tt.want {
+				t.Errorf("SCAN_INTERVAL=%q ScanInterval = %v, want %v", tt.val, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestExcludeReposCaseInsensitive pins parseExcludes' lowercasing: a mixed-case
+// EXCLUDE_REPOS entry is stored under its lowercase key so the collector's
+// (also-lowercased) lookups match it. GitHub repo names are case-insensitive.
+func TestExcludeReposCaseInsensitive(t *testing.T) {
+	t.Setenv("EXCLUDE_REPOS", "Noisy-Repo, OTHER")
+	cfg := Load()
+	if !cfg.ExcludeRepos["noisy-repo"] {
+		t.Errorf("ExcludeRepos missing lowercased key noisy-repo: %v", cfg.ExcludeRepos)
+	}
+	if !cfg.ExcludeRepos["other"] {
+		t.Errorf("ExcludeRepos missing lowercased key other: %v", cfg.ExcludeRepos)
+	}
 }

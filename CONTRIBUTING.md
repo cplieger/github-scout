@@ -53,8 +53,11 @@ lives under `internal/`:
   be unit-tested with a scripted fake while the HTTP client is tested separately
   against an `httptest` server.
 - `internal/model`: domain types (`Repo`, `WorkflowRun`, `PullRequest`, `Issue`,
-  `CodeScanningAlert`). Their JSON tags are the Loki field names the dashboard
-  queries, so treat them as a contract; renaming a tag breaks dashboard panels.
+  `CodeScanningAlert`). The structs are never JSON-marshaled on the emit path;
+  the Loki field names are the literal slog keys emitted in `internal/collect`,
+  and the JSON tags here mirror those keys for documentation. Renaming a tag
+  does not change a Loki field; renaming a slog key does. `TestLogKeysMatchModelTags`
+  fails the build if the two drift.
 - `internal/urlsafe`: URL path-segment validation, applied to every owner/repo
   name before it is interpolated into a request URL.
 
@@ -145,8 +148,10 @@ A few house rules the linters enforce that are easy to trip on:
 github-scout is structured so a new actionable signal (say, "a deployment was
 left pending") can be added without disturbing the failed-run path:
 
-1. **Model**: add a type in `internal/model` with JSON tags that become the
-   Loki field names (a contract the dashboard queries).
+1. **Model**: add a type in `internal/model`. Its JSON tags document the
+   fields, but the Loki field names are the literal slog keys you emit in
+   step 4 — keep the tags in sync with those keys (the four existing signals
+   are guarded by `TestLogKeysMatchModelTags`; add your new type to it).
 2. **Client**: add a read method on `internal/github.Client` (page-count
    pagination via `getJSON`, `urlsafe` for any path segments).
 3. **Interface**: extend the consumer-side `apiClient` interface in

@@ -2,6 +2,7 @@ package github
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -41,13 +42,17 @@ func FuzzDecodeSearchResp(f *testing.F) {
 	f.Add(`{"items":[{"number":"nope"}]}`)
 	f.Add(`{"items":[{"draft":true,"created_at":"bad-ts","repository_url":"garbage"}]}`)
 
-	f.Fuzz(func(_ *testing.T, data string) {
+	f.Fuzz(func(t *testing.T, data string) {
 		var resp apiSearchResp
 		if json.Unmarshal([]byte(data), &resp) != nil {
 			return
 		}
 		for i := range resp.Items {
-			_ = repoFromAPIURL(resp.Items[i].RepositoryURL) // must not panic
+			in := resp.Items[i].RepositoryURL
+			got := repoFromAPIURL(in)
+			if !strings.HasSuffix(in, got) {
+				t.Fatalf("repoFromAPIURL(%q) = %q, not a suffix of input", in, got)
+			}
 		}
 	})
 }

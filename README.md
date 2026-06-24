@@ -260,8 +260,31 @@ The `conclusion` is any completed-run outcome (`success`, `failure`,
 dashboard treats `failure` / `timed_out` / `startup_failure` as the failure set
 (the failed-run count tile and the failures table). Each scan also logs a
 `scan complete` summary line (`scanned`, `skipped`, `open_prs`, `open_issues`,
-`code_alerts`, `new_runs`, `new_failures`, `tracked`, `duration`); a
-repo-discovery failure logs at `error` level.
+`code_alerts`, `new_runs`, `new_failures`, `tracked`, `duration`), plus three
+data-integrity fields: `errors` (how many signal collections failed this scan),
+`degraded` (`true` when `errors > 0`, or when discovery returned zero repos so
+nothing was scanned), and `failed_signals` (the comma-joined signals it could
+not read, e.g. `code_scanning`). These distinguish a verified `0` ("checked,
+nothing there") from an unverified `0` ("could not check") — which matters most
+for the code-scanning security signal.
+
+A repo-discovery failure logs at `error` level and is the only failure that
+marks the container unhealthy: health is a liveness signal a restart could
+clear. Per-signal collection failures do NOT flip health (a restart cannot fix
+a missing token scope or a rate limit); instead they are reported as data
+integrity. An incidental per-repo failure — a transient error, or one private
+repo without GitHub Advanced Security returning 403 on code scanning — is
+counted as `degraded` (it reddens the dashboard tile) but is NOT paged. A
+SYSTEMIC failure escalates to a distinct `error`-level `scan degraded` line
+carrying a machine `cause`, a human `reason`, and `failed_signals`:
+`token_invalid` (401) or `rate_limited` (429), which poison every call;
+`no_repos_visible` when discovery succeeds but returns zero repositories (a
+token that lost repo visibility, so nothing was scanned); `code_scanning_blind`
+/ `runs_blind` when a per-repo signal could not be read for ANY repo that has it
+(e.g. a missing token scope — a repo that simply lacks code scanning is
+excluded, so it never masks a real blackout); or `signal_blind` when a
+cross-repo search (PRs or issues) fails. That is what an alert fires on, instead
+of the failure hiding behind a quiet all-zero scan.
 
 ## Grafana integration
 
@@ -278,7 +301,11 @@ questions:
    ("3 days ago") with a red-to-green gradient, so the stalest items stand out.
 3. **Recent CI failures**: a linked table of failed, timed-out, and
    startup-failed runs in the selected time range (successful runs are omitted).
-4. **Scout health**: a tile that flips to STALLED if no scan completed recently.
+4. **Scout health**: a STALLED tile (red when no scan completed recently)
+   alongside a **Scan Integrity** tile that is neutral while recent scans read
+   every signal and turns red when one was degraded — a signal it could not
+   read, so a `0` above may be unverified rather than confirmed empty — and a
+   **Recent scan problems** panel listing every warning and error behind it.
 
 Two controls shape what you see:
 
@@ -297,7 +324,12 @@ Every panel is built on a single Loki selector, for example:
 
 Tables render the `url` field as a click-through link. Because the events are
 plain logs, you can also write a Loki ruler alert
-(`count_over_time(... [1h]) > 0`) to be notified the moment anything breaks.
+(`count_over_time(... [1h]) > 0`) to be notified the moment anything breaks. The
+homelab deployment ships two: one fires on the `scan degraded` line (a scan that
+ran but went blind — a dead/under-scoped token or a rate limit), and a liveness
+rule fires when no `scan complete` line appears for 40m (a wedged container or a
+token revoked at discovery, which the Scan Integrity tile cannot show because no
+scan ran).
 
 ## Healthcheck
 
@@ -305,8 +337,11 @@ A marker file at `/tmp/.healthy` is written after each scan whose repo discovery
 succeeded, and cleared otherwise. The `health` subcommand
 (`/github-scout health`) checks the marker and exits non-zero when unhealthy;
 this is the container's `HEALTHCHECK`, so no HTTP port or shell is needed on the
-distroless image. The container starts unhealthy and flips healthy after the
-first successful scan. Per-repo run-list failures are tolerated (logged; the
+distroless image. In scheduled mode the container starts unhealthy and flips
+healthy after the first successful scan. In resident-idle mode
+(`SCAN_INTERVAL=off`) it reports healthy as soon as it is up and idle
+(liveness); each external `trigger` exec then updates the marker to reflect that
+scan's outcome. Per-repo run-list failures are tolerated (logged; the
 scan stays healthy); only a repo-discovery failure (bad token, rate limit) marks
 the container unhealthy.
 
