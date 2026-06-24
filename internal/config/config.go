@@ -22,7 +22,7 @@ import (
 	"github.com/cplieger/github-scout/internal/urlsafe"
 )
 
-// Defaults for env-var-backed fields. Exported for test assertions.
+// Defaults for env-var-backed fields.
 const (
 	// DefaultScanInterval is the gap between scans in scheduled mode. 15
 	// minutes keeps the "what just broke" latency low while staying far
@@ -44,6 +44,9 @@ const (
 	// maxScanInterval guards against nonsense configuration (a year between
 	// scans defeats the purpose).
 	maxScanInterval = 365 * 24 * time.Hour
+	// minScanInterval floors a too-frequent interval: a sub-minute scan of a
+	// multi-repo account exhausts GitHub's 5000 req/hour budget and thrashes.
+	minScanInterval = 1 * time.Minute
 	// maxLookbackHours caps the lookback window. 30 days is already far
 	// past "actionable"; beyond it the dedup set and API cost grow without
 	// surfacing anything a human would still act on.
@@ -78,11 +81,11 @@ type Config struct {
 // Load reads configuration from the environment with sensible defaults.
 func Load() Config {
 	return Config{
-		Token:        os.Getenv("GITHUB_TOKEN"),
+		Token:        strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
 		Owner:        strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
 		ExcludeRepos: parseExcludes(os.Getenv("EXCLUDE_REPOS")),
-		PRExclude:    GetEnv("PR_EXCLUDE_QUERY", DefaultPRExclude),
-		IssueExclude: GetEnv("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
+		PRExclude:    getEnv("PR_EXCLUDE_QUERY", DefaultPRExclude),
+		IssueExclude: getEnv("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
 		ScanInterval: parseScanInterval(os.Getenv("SCAN_INTERVAL")),
 		Lookback:     time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
 		LogLevel:     parseLogLevel(os.Getenv("LOG_LEVEL")),
@@ -113,17 +116,20 @@ func parseScanInterval(raw string) time.Duration {
 	case d > maxScanInterval:
 		slog.Warn("SCAN_INTERVAL clamped", "value", raw, "max", maxScanInterval)
 		return maxScanInterval
+	case d > 0 && d < minScanInterval:
+		slog.Warn("SCAN_INTERVAL below minimum, clamping", "value", raw, "min", minScanInterval)
+		return minScanInterval
 	default:
 		return d
 	}
 }
 
-// GetEnv returns os.Getenv(key) when set to a non-empty value, otherwise
+// getEnv returns os.Getenv(key) when set to a non-empty value, otherwise
 // fallback. An explicitly-set empty string is treated as unset — sufficient
 // for this app's configuration where all values are non-empty or absent.
 // Note: to intentionally disable an exclusion filter, set it to a no-op
 // qualifier rather than empty (empty falls back to the default).
-func GetEnv(key, fallback string) string {
+func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
@@ -140,13 +146,16 @@ func (c *Config) Valid() bool {
 }
 
 // parseExcludes parses a comma-separated list of bare repo names to skip.
-// Entries are trimmed; empties are dropped. Unsafe names are kept (they
-// only ever compared, never used to build a URL) but trimmed.
+// Entries are trimmed and lowercased; empties are dropped. Matching is
+// case-insensitive — the collect-side lookup keys are lowercased to match —
+// mirroring keep()'s case-insensitive owner test (GitHub repo names are
+// themselves case-insensitive). Unsafe names are kept (they only ever
+// compared, never used to build a URL) but trimmed.
 func parseExcludes(s string) map[string]bool {
 	out := make(map[string]bool)
 	for p := range strings.SplitSeq(s, ",") {
 		if p = strings.TrimSpace(p); p != "" {
-			out[p] = true
+			out[strings.ToLower(p)] = true
 		}
 	}
 	return out

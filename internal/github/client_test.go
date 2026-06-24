@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -291,17 +292,19 @@ func TestListCodeScanningAlerts(t *testing.T) {
 	}
 }
 
-func TestCodeScanning404IsNotError(t *testing.T) {
-	// A repo that never ran code scanning returns 404 — the client maps it
-	// to an empty result, not an error, so a repo lacking CodeQL is silent.
+func TestCodeScanning404IsNoCodeScanning(t *testing.T) {
+	// A repo that never ran code scanning returns 404 — the client maps it to
+	// the benign model.ErrNoCodeScanning sentinel (NOT a read failure, and NOT
+	// a silent clean read), so the collector can exclude it from the "blind"
+	// calculation. It still yields no alerts.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "no analysis found", http.StatusNotFound)
 	}))
 	defer srv.Close()
 
 	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
-	if err != nil {
-		t.Errorf("404 should be tolerated, got error: %v", err)
+	if !errors.Is(err, model.ErrNoCodeScanning) {
+		t.Errorf("404 should map to model.ErrNoCodeScanning, got: %v", err)
 	}
 	if len(alerts) != 0 {
 		t.Errorf("404 should yield no alerts, got %d", len(alerts))
@@ -311,14 +314,68 @@ func TestCodeScanning404IsNotError(t *testing.T) {
 func TestCodeScanning403IsError(t *testing.T) {
 	// A 403 is ambiguous — Advanced Security disabled, a missing token
 	// scope, or a rate limit. It MUST surface as an error rather than be
-	// silently mapped to "zero alerts", which would hide a security signal.
+	// silently mapped to "zero alerts", which would hide a security signal,
+	// and it must NOT be the benign no-code-scanning sentinel.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "Resource not accessible by personal access token", http.StatusForbidden)
 	}))
 	defer srv.Close()
 
-	if _, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"}); err == nil {
+	_, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	if err == nil {
 		t.Errorf("403 must surface as an error (silent zero-alerts is a security false-negative)")
+	}
+	if errors.Is(err, model.ErrNoCodeScanning) {
+		t.Errorf("403 must NOT be mapped to the benign no-code-scanning sentinel")
+	}
+	// A 403 is per-repo (one private repo without GHAS, a missing scope), not
+	// a fleet-wide class, so it must map to NEITHER systemic sentinel; the
+	// collector then treats it as a plain per-repo failure that escalates only
+	// when code scanning is blind for every repo that has it.
+	if errors.Is(err, model.ErrTokenInvalid) || errors.Is(err, model.ErrRateLimited) {
+		t.Errorf("403 must not map to a systemic sentinel, got: %v", err)
+	}
+}
+
+// TestStatus401MapsTokenInvalid and TestStatus429MapsRateLimited pin the
+// systemic status→sentinel mapping the collector's escalation depends on. They
+// are the boundary half of the contract: the github client is the single place
+// that turns an HTTP status into meaning, so internal/collect can classify on
+// model sentinels without importing the HTTP transport. A regression that
+// stopped mapping 401/429 would silently downgrade a fleet-wide credential or
+// rate-limit failure to a per-repo blip and fail to page.
+func TestStatus401MapsTokenInvalid(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "Bad credentials", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ListRepos(context.Background(), "cplieger")
+	if !errors.Is(err, model.ErrTokenInvalid) {
+		t.Errorf("401 should map to model.ErrTokenInvalid, got: %v", err)
+	}
+	if errors.Is(err, model.ErrRateLimited) {
+		t.Errorf("401 must not also be ErrRateLimited")
+	}
+}
+
+func TestStatus429MapsRateLimited(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "API rate limit exceeded", http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	// One attempt only: a 429 is retryable, and the test only needs to observe
+	// the post-exhaustion mapping, not sit through backoff.
+	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default())
+	c.baseURL = srv.URL
+
+	_, err := c.ListRepos(context.Background(), "cplieger")
+	if !errors.Is(err, model.ErrRateLimited) {
+		t.Errorf("429 should map to model.ErrRateLimited, got: %v", err)
+	}
+	if errors.Is(err, model.ErrTokenInvalid) {
+		t.Errorf("429 must not also be ErrTokenInvalid")
 	}
 }
 
@@ -449,5 +506,158 @@ func TestListCodeScanningAlertsStopsAtMaxPages(t *testing.T) {
 	}
 	if len(alerts) != maxPages*perPage {
 		t.Errorf("got %d alerts, want %d", len(alerts), maxPages*perPage)
+	}
+}
+
+// TestCodeScanningNotFound pins the 404-vs-everything-else classifier that
+// decides whether a code-scanning read error is the benign no-analyses 404 or
+// a real failure. The security contract hinges on the non-StatusError branch:
+// a couldn't-check (a transient or decode error) must never be read as a
+// confirmed-clean, so only a 404 StatusError maps to true.
+func TestCodeScanningNotFound(t *testing.T) {
+	tests := []struct {
+		err  error
+		name string
+		want bool
+	}{
+		{&httpx.StatusError{Code: http.StatusNotFound}, "404 status is no-code-scanning", true},
+		{&httpx.StatusError{Code: http.StatusForbidden}, "403 status is not no-code-scanning", false},
+		{&httpx.StatusError{Code: http.StatusInternalServerError}, "500 status is not no-code-scanning", false},
+		{errors.New("decode: unexpected EOF"), "non-status error is not no-code-scanning", false},
+		{nil, "nil error is not no-code-scanning", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := codeScanningNotFound(tt.err); got != tt.want {
+				t.Errorf("codeScanningNotFound(%v) = %v, want %v", tt.err, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestUnsafeSegmentsRejectedSearchAndCodeScanning extends the urlsafe guard
+// coverage to the three methods TestUnsafeSegmentsRejected does not exercise:
+// SearchOpenPRs / SearchOpenIssues (via search) and ListCodeScanningAlerts. A
+// traversal/injection segment (../evil) must be rejected before URL
+// construction in each.
+func TestUnsafeSegmentsRejectedSearchAndCodeScanning(t *testing.T) {
+	c := NewClient(httpx.NewClient(time.Second), "tok", nil, slog.Default())
+
+	if _, err := c.SearchOpenPRs(context.Background(), "../evil", ""); err == nil {
+		t.Errorf("SearchOpenPRs accepted unsafe owner")
+	}
+	if _, err := c.SearchOpenIssues(context.Background(), "../evil", ""); err == nil {
+		t.Errorf("SearchOpenIssues accepted unsafe owner")
+	}
+	bad := model.Repo{Owner: "ok", Name: "../evil"}
+	if _, err := c.ListCodeScanningAlerts(context.Background(), bad); err == nil {
+		t.Errorf("ListCodeScanningAlerts accepted unsafe repo name")
+	}
+}
+
+// TestSearchIncompleteResultsErrors pins the data-integrity contract on the
+// Search API's incomplete_results flag: GitHub sets it when a search times out
+// server-side, so the returned set is partial and must NOT be read as a
+// confirmed-empty/complete result. search() returns an error in that case and
+// SearchOpenPRs propagates it (nil, err), so the collector folds the failed
+// search into its degraded/signal_blind verdict rather than reporting a false 0.
+func TestSearchIncompleteResultsErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"incomplete_results":true,"items":[
+			{"number":1,"repository_url":"https://api.github.com/repos/cplieger/a","user":{"login":"cplieger"}}
+		]}`))
+	}))
+	defer srv.Close()
+
+	prs, err := newTestClient(t, srv).SearchOpenPRs(context.Background(), "cplieger", "")
+	if err == nil {
+		t.Fatalf("SearchOpenPRs must error when GitHub returns incomplete_results (a timed-out search is not a confirmed-empty result)")
+	}
+	if !strings.Contains(err.Error(), "incomplete results") {
+		t.Errorf("error = %v, want it to mention incomplete results", err)
+	}
+	if prs != nil {
+		t.Errorf("prs = %v, want nil PRs on an incomplete-results error", prs)
+	}
+}
+
+// TestCodeScanning404MidPaginationIsRealError pins the len(alerts)==0 guard in
+// ListCodeScanningAlerts: a 404 is mapped to the benign model.ErrNoCodeScanning
+// ONLY before any alert is collected. A 404 on page 2+ (after page 1 returned a
+// full page) is a real read failure and must surface as a wrapped error, never
+// be swallowed as "no code scanning" (which would drop the alerts already read
+// and report a false clean). Statement coverage is green on the line via the
+// first-page-404 test, but the len(alerts)!=0 path is otherwise unexercised.
+func TestCodeScanning404MidPaginationIsRealError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = w.Write([]byte("[" + jsonList(`{"number":%d,"rule":{"id":"go/x"},"tool":{"name":"CodeQL"}}`, perPage, 1) + "]"))
+			return
+		}
+		http.Error(w, "not found", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	_, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	if err == nil {
+		t.Fatalf("a 404 mid-pagination (after alerts were collected) must be a real error, not silently swallowed as no-code-scanning")
+	}
+	if errors.Is(err, model.ErrNoCodeScanning) {
+		t.Errorf("a mid-pagination 404 must NOT map to model.ErrNoCodeScanning: err = %v", err)
+	}
+}
+
+// TestGetJSONSurfacesDecodeError pins the untrusted-input decode chokepoint:
+// getJSON is the single point through which all five API reads decode bytes
+// from GitHub, so a malformed body must surface as a "decode response" error
+// rather than be swallowed into a zero-value struct and read as a
+// confirmed-empty result.
+func TestGetJSONSurfacesDecodeError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items": [ this is not valid json `))
+	}))
+	defer srv.Close()
+
+	prs, err := newTestClient(t, srv).SearchOpenPRs(context.Background(), "cplieger", "")
+	if err == nil {
+		t.Fatalf("SearchOpenPRs must error on a malformed JSON body, not read it as zero results")
+	}
+	if !strings.Contains(err.Error(), "decode response") {
+		t.Errorf("error = %v, want it to mention \"decode response\"", err)
+	}
+	if prs != nil {
+		t.Errorf("prs = %v, want nil on a decode error", prs)
+	}
+}
+
+// TestListRunsReturnsPartialOnMidPaginationError pins ListRuns's partial-return
+// contract: on a getJSON failure mid-pagination it returns the runs collected
+// from earlier pages ALONGSIDE the error (return runs, err -- not nil, err),
+// unlike the other readers. The collector relies on this: collectRuns emits the
+// partial set while still folding the error into its degraded verdict.
+func TestListRunsReturnsPartialOnMidPaginationError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("page") == "1" {
+			_, _ = w.Write([]byte(`{"workflow_runs":[` +
+				jsonList(`{"id":%d,"conclusion":"success","created_at":"2026-06-20T10:00:00Z"}`, perPage, 1) + `]}`))
+			return
+		}
+		http.Error(w, "server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default())
+	c.baseURL = srv.URL
+
+	runs, err := c.ListRuns(context.Background(), model.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
+	if err == nil {
+		t.Fatalf("ListRuns must error when a page fetch fails mid-pagination")
+	}
+	if len(runs) != perPage {
+		t.Errorf("got %d runs, want %d (the page-1 set must be returned alongside the error, not dropped)", len(runs), perPage)
 	}
 }

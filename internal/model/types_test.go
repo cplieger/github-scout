@@ -14,18 +14,18 @@ func TestFailureConclusionsStable(t *testing.T) {
 	// guard against an accidental reorder/rename that would silently drop
 	// a failure flavour from the scan.
 	want := []string{"failure", "timed_out", "startup_failure"}
-	if len(FailureConclusions) != len(want) {
-		t.Fatalf("FailureConclusions = %v, want %v", FailureConclusions, want)
+	if len(failureConclusions) != len(want) {
+		t.Fatalf("failureConclusions = %v, want %v", failureConclusions, want)
 	}
 	for i, w := range want {
-		if FailureConclusions[i] != w {
-			t.Errorf("FailureConclusions[%d] = %q, want %q", i, FailureConclusions[i], w)
+		if failureConclusions[i] != w {
+			t.Errorf("failureConclusions[%d] = %q, want %q", i, failureConclusions[i], w)
 		}
 	}
 }
 
 func TestIsFailureConclusion(t *testing.T) {
-	// Only the FailureConclusions set counts as a failure. success and
+	// Only the failureConclusions set counts as a failure. success and
 	// cancelled/skipped/neutral (and the empty conclusion of an in-flight
 	// run that slipped through) must NOT count — they would dilute the
 	// failure rate and over-report new_failures.

@@ -105,7 +105,7 @@ func (c *Client) ListRepos(ctx context.Context, owner string) ([]model.Repo, err
 			return nil, fmt.Errorf("list repos page %d: %w", page, err)
 		}
 		for _, r := range pageRepos {
-			if r.Owner.Login != owner || r.Archived {
+			if !strings.EqualFold(r.Owner.Login, owner) || r.Archived {
 				continue
 			}
 			repos = append(repos, model.Repo{
@@ -166,7 +166,7 @@ func (c *Client) ListRuns(ctx context.Context, repo model.Repo, since time.Time)
 
 		var pageData apiRunsPage
 		if err := c.getJSON(ctx, reqURL, &pageData); err != nil {
-			return runs, err
+			return runs, fmt.Errorf("list runs page %d: %w", page, err)
 		}
 		for _, r := range pageData.WorkflowRuns {
 			runs = append(runs, model.WorkflowRun{
@@ -204,7 +204,7 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 	)
 	body, err := httpx.Retry(ctx, c.http, reqURL, opts...)
 	if err != nil {
-		return err
+		return mapStatusError(err)
 	}
 	if err := json.Unmarshal(body, out); err != nil {
 		return fmt.Errorf("decode response: %w", err)
@@ -212,11 +212,36 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 	return nil
 }
 
+// mapStatusError translates the SYSTEMIC transport failures httpx.Retry can
+// return into the domain sentinels the collector escalates on, so
+// internal/collect classifies on meaning and never imports httpx. A 401
+// (rejected token) and a 429 (rate limit) are fleet-wide — they poison every
+// call this scan — so they become model.ErrTokenInvalid / model.ErrRateLimited
+// (the original status error is preserved in the chain for logging). Every
+// other failure passes through unchanged: a 403 (per-repo: Advanced Security
+// off or a missing scope), a 5xx, or a decode error is a plain per-signal
+// failure, and a 404 is left for ListCodeScanningAlerts to map to
+// ErrNoCodeScanning. This is the same boundary mapping as codeScanningNotFound,
+// kept in one place so the github client is the single authority on
+// status→meaning.
+func mapStatusError(err error) error {
+	if se, ok := errors.AsType[*httpx.StatusError](err); ok {
+		switch se.Code {
+		case http.StatusUnauthorized:
+			return fmt.Errorf("%w: %w", model.ErrTokenInvalid, err)
+		case http.StatusTooManyRequests:
+			return fmt.Errorf("%w: %w", model.ErrRateLimited, err)
+		}
+	}
+	return err
+}
+
 // --- Pull requests & issues (cross-repo via the Search API) ---
 
 // apiSearchResp is the /search/issues envelope.
 type apiSearchResp struct {
-	Items []apiSearchItem `json:"items"`
+	Items             []apiSearchItem `json:"items"`
+	IncompleteResults bool            `json:"incomplete_results"`
 }
 
 // apiSearchItem is one search result. The endpoint returns both issues and
@@ -310,9 +335,13 @@ func (c *Client) search(ctx context.Context, base, owner, exclude string) ([]api
 
 		var resp apiSearchResp
 		if err := c.getJSON(ctx, reqURL, &resp); err != nil {
-			return items, fmt.Errorf("search %q page %d: %w", base, page, err)
+			return nil, fmt.Errorf("search %q page %d: %w", base, page, err)
 		}
 		items = append(items, resp.Items...)
+		if resp.IncompleteResults {
+			return nil, fmt.Errorf("search %q page %d: GitHub returned incomplete results"+
+				" (search timed out)", base, page)
+		}
 		if len(resp.Items) < perPage {
 			break
 		}
@@ -338,14 +367,16 @@ type apiCodeAlert struct {
 }
 
 // ListCodeScanningAlerts returns open code-scanning alerts for repo. A repo
-// that never ran code scanning returns 404 (no analyses), which is NOT an
-// error — it simply has no alerts, so we return empty. A 403 is returned as
-// an error instead: it can mean GitHub Advanced Security is disabled
-// (expected on private repos) but ALSO a missing token scope or a
-// rate-limit, and silently reporting zero alerts on those would hide a
-// security signal. The collector logs a 403 as a warning and stays healthy;
-// silence an expected, persistent one (e.g. a private repo without Advanced
-// Security) via EXCLUDE_REPOS.
+// that never ran code scanning returns 404 (no analyses); that is a benign
+// "no data" outcome rather than a read failure, so it is surfaced as
+// model.ErrNoCodeScanning (the collector treats such a repo as neither
+// readable nor blind). A 403 is surfaced as a generic error: it can mean
+// GitHub Advanced Security is disabled (expected on a private repo without a
+// GHAS license) OR a missing token scope OR a rate-limit, and silently
+// reporting zero alerts would hide a security signal. The collector treats a
+// per-repo 403 as a degraded read and escalates only when code scanning is
+// blind for EVERY repo that has it; silence an expected, persistent 403 (a
+// private repo without GHAS) via EXCLUDE_REPOS.
 func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([]model.CodeScanningAlert, error) {
 	if !urlsafe.IsSafeURLSegment(repo.Owner) || !urlsafe.IsSafeURLSegment(repo.Name) {
 		return nil, fmt.Errorf("unsafe repo segment: %q", repo.FullName())
@@ -358,15 +389,21 @@ func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([
 		v.Set("page", strconv.Itoa(page))
 		reqURL := fmt.Sprintf("%s/repos/%s/%s/code-scanning/alerts?%s", c.baseURL, repo.Owner, repo.Name, v.Encode())
 
-		var page0 []apiCodeAlert
-		if err := c.getJSON(ctx, reqURL, &page0); err != nil {
-			if codeScanningNotFound(err) {
-				return nil, nil // no analyses for this repo — not an error
+		var pageAlerts []apiCodeAlert
+		if err := c.getJSON(ctx, reqURL, &pageAlerts); err != nil {
+			if codeScanningNotFound(err) && len(alerts) == 0 {
+				// No analyses for this repo (404): not a read failure but a
+				// benign "no data" outcome. Surface model.ErrNoCodeScanning so
+				// the collector excludes this repo from the code-scanning
+				// "blind" calculation instead of counting it as a clean read.
+				// A 404 after earlier pages already returned alerts is a real
+				// read failure, not no-data — surface it via the wrapped error.
+				return nil, model.ErrNoCodeScanning
 			}
-			return alerts, err
+			return nil, fmt.Errorf("list code scanning alerts page %d: %w", page, err)
 		}
-		for i := range page0 {
-			a := &page0[i]
+		for i := range pageAlerts {
+			a := &pageAlerts[i]
 			alerts = append(alerts, model.CodeScanningAlert{
 				CreatedAt: a.CreatedAt,
 				Repo:      repo.FullName(),
@@ -377,7 +414,7 @@ func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([
 				Number:    a.Number,
 			})
 		}
-		if len(page0) < perPage {
+		if len(pageAlerts) < perPage {
 			break
 		}
 	}
@@ -393,8 +430,7 @@ func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([
 // silently reporting zero alerts on the latter two would be a false-negative
 // on a security signal — so a 403 is surfaced as an error instead.
 func codeScanningNotFound(err error) bool {
-	var se *httpx.StatusError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[*httpx.StatusError](err); ok {
 		return se.Code == http.StatusNotFound
 	}
 	return false

@@ -7,15 +7,24 @@
 // by the API) routes through this function.
 package urlsafe
 
-import "strings"
+import "regexp"
 
-// IsSafeURLSegment returns true if s contains no characters that could
-// break URL path construction or enable path traversal. Empty, ".", and
-// ".." are rejected so the guarantee holds even as the input surface
-// broadens.
+// safeSegment matches the characters GitHub permits in an owner or repo
+// path segment: ASCII letters, digits, dot, underscore, and hyphen. An
+// allowlist (rather than a denylist of known-dangerous bytes) keeps the
+// guarantee robust as the input surface broadens — anything outside this
+// set is rejected by construction.
+var safeSegment = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+// IsSafeURLSegment returns true if s is safe to embed in a URL path
+// segment: it must be non-empty, not a traversal element ("." or ".."),
+// and consist solely of GitHub's permitted owner/repo characters
+// ([A-Za-z0-9._-]). Every caller that builds a GitHub API URL from external
+// input routes through this allowlist, the single source of truth for
+// path-segment safety.
 func IsSafeURLSegment(s string) bool {
 	if s == "" || s == "." || s == ".." {
 		return false
 	}
-	return !strings.ContainsAny(s, "/%\\?#@:")
+	return safeSegment.MatchString(s)
 }

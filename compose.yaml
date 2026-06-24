@@ -3,20 +3,20 @@ services:
     image: ghcr.io/cplieger/github-scout:latest
     container_name: github-scout
     restart: unless-stopped
-    user: "1000:1000"  # match your host user
+    user: "1000:1000"  # any non-root UID; no volumes, so it need not match a host user
 
     environment:
       TZ: "Europe/Paris"
-      GITHUB_OWNER: ""  # GitHub login (user or org) whose repos are scanned
-      GITHUB_TOKEN: ""  # PAT: classic `repo` (or `public_repo`); fine-grained = Actions/PRs/Issues/Code scanning alerts read
+      # GITHUB_OWNER + GITHUB_TOKEN are required; set them in your shell env or a
+      # .env file beside this compose so the token stays out of git. Token scopes
+      # and the full config reference are in the README.
+      GITHUB_OWNER: "${GITHUB_OWNER:?set GITHUB_OWNER - the login whose repos to scan}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:?set GITHUB_TOKEN - needs repo + Actions + code-scanning read}"
       SCAN_INTERVAL: "15m"  # Go duration between scans; "off" = resident-idle (external trigger)
       LOOKBACK_HOURS: "72"  # how far back to consider failed runs
       EXCLUDE_REPOS: ""  # comma-separated bare repo names to skip
       LOG_LEVEL: "info"
 
-    # Writable home for the only file github-scout writes: the
-    # /tmp/.healthy marker the `health` subcommand checks. The app is
-    # otherwise stateless (dedup set in memory, history in Loki), so no
-    # volumes. 1 MB is ample; noexec/nosuid/nodev harden it.
+    # Writable /tmp for the health marker + run-dedup state; no volume (history lives in Loki).
     tmpfs:
-      - "/tmp:size=1m,mode=1777,noexec,nosuid,nodev"
+      - "/tmp:size=16m,mode=1777,noexec,nosuid,nodev"
