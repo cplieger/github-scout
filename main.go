@@ -39,7 +39,7 @@ import (
 	"github.com/cplieger/github-scout/internal/github"
 	"github.com/cplieger/github-scout/internal/urlsafe"
 	"github.com/cplieger/health"
-	"github.com/cplieger/httpx"
+	"github.com/cplieger/httpx/v2"
 )
 
 // seenStatePath persists the run dedup set across one-shot `trigger`
