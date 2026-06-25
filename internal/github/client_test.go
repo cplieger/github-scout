@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -13,7 +14,7 @@ import (
 	"time"
 
 	"github.com/cplieger/github-scout/internal/model"
-	"github.com/cplieger/httpx"
+	"github.com/cplieger/httpx/v2"
 )
 
 // newTestClient wires a Client at the test server's URL with a short-timeout
@@ -659,5 +660,37 @@ func TestListRunsReturnsPartialOnMidPaginationError(t *testing.T) {
 	}
 	if len(runs) != perPage {
 		t.Errorf("got %d runs, want %d (the page-1 set must be returned alongside the error, not dropped)", len(runs), perPage)
+	}
+}
+
+// TestGetJSON_routes_retry_logs_to_client_logger verifies that getJSON wires
+// the client's logger into httpx via WithLogger: httpx's per-attempt retry
+// diagnostics must land on the injected logger, not the global slog.Default().
+// The server returns one 503 (retried) then 200, so httpx logs one Debug
+// "will retry" line, which must appear in the client logger's buffer.
+func TestGetJSON_routes_retry_logs_to_client_logger(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		if calls == 1 {
+			w.WriteHeader(http.StatusServiceUnavailable) // retried by httpx
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer srv.Close()
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	c := NewClient(httpx.NewClient(5*time.Second), "tok",
+		[]httpx.Option{httpx.WithBaseDelay(time.Millisecond)}, logger)
+	c.baseURL = srv.URL
+
+	if _, err := c.ListRepos(context.Background(), "cplieger"); err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if !strings.Contains(buf.String(), "will retry") {
+		t.Errorf("client logger did not capture httpx retry log (WithLogger not wired?); log=%q", buf.String())
 	}
 }

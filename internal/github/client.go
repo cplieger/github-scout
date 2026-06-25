@@ -27,7 +27,7 @@ import (
 
 	"github.com/cplieger/github-scout/internal/model"
 	"github.com/cplieger/github-scout/internal/urlsafe"
-	"github.com/cplieger/httpx"
+	"github.com/cplieger/httpx/v2"
 )
 
 const (
@@ -192,7 +192,7 @@ func (c *Client) ListRuns(ctx context.Context, repo model.Repo, since time.Time)
 // transport and decodes the body into out. The body is capped so a
 // runaway response can't exhaust memory.
 func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
-	opts := make([]httpx.Option, 0, len(c.retryOpts)+2)
+	opts := make([]httpx.Option, 0, len(c.retryOpts)+3)
 	opts = append(opts, c.retryOpts...)
 	opts = append(opts,
 		httpx.WithHeaders(func(req *http.Request) {
@@ -201,6 +201,10 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 			req.Header.Set("X-GitHub-Api-Version", apiVersion)
 		}),
 		httpx.WithMaxBodyBytes(bodyCap),
+		// Route httpx's retry diagnostics through the client's logger
+		// instead of the global slog.Default(), so retry logs share the
+		// app's configured (JSON) handler and are injectable in tests.
+		httpx.WithLogger(c.logger),
 	)
 	body, err := httpx.Retry(ctx, c.http, reqURL, opts...)
 	if err != nil {
