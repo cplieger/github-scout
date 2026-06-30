@@ -482,3 +482,37 @@ func TestScanDiscoveryCancelIsCleanShutdown(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordRunsTalliesEachSuccessfulRead pins recordRuns' success accounting:
+// every OK runs read bumps the runsOK tally by exactly one, so after N
+// successful reads the tally is N. runsBlind() consults this tally
+// (runsFailed > 0 && runsOK == 0) to separate a fleet-wide runs blackout from an
+// incidental single-repo miss, so a successful read must register as a positive
+// success — one good read is what proves "at least one repo's runs were
+// readable" and keeps an isolated failure from masquerading as a blackout.
+func TestRecordRunsTalliesEachSuccessfulRead(t *testing.T) {
+	var sc scanIntegrity
+	for range 3 {
+		sc.recordRuns(nil) // a nil error is a successful read (outcomeOK)
+	}
+	if sc.runsOK != 3 {
+		t.Errorf("runsOK = %d after 3 successful reads, want 3 (each OK read counts once)", sc.runsOK)
+	}
+}
+
+// TestRecordAlertsTalliesEachSuccessfulRead pins recordAlerts' success
+// accounting: every OK code-scanning read bumps the csOK tally by exactly one,
+// so after N successful reads the tally is N. codeScanningBlind() consults this
+// tally (csFailed > 0 && csOK == 0) to tell a security-signal blackout — every
+// code-scanning-capable repo unreadable — from a tolerated single-repo 403, so a
+// successful read must register as a positive success or one good read could no
+// longer prove the signal is not dark across the board.
+func TestRecordAlertsTalliesEachSuccessfulRead(t *testing.T) {
+	var sc scanIntegrity
+	for range 2 {
+		sc.recordAlerts(nil) // a nil error is a successful read (outcomeOK)
+	}
+	if sc.csOK != 2 {
+		t.Errorf("csOK = %d after 2 successful reads, want 2 (each OK read counts once)", sc.csOK)
+	}
+}
