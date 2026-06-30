@@ -1,22 +1,13 @@
+# Example compose for github-scout. See the README for all configuration options and hardening.
 services:
   github-scout:
     image: ghcr.io/cplieger/github-scout:latest
     container_name: github-scout
     restart: unless-stopped
-    user: "1000:1000"  # any non-root UID; no volumes, so it need not match a host user
 
     environment:
       TZ: "Europe/Paris"
-      # GITHUB_OWNER + GITHUB_TOKEN are required; set them in your shell env or a
-      # .env file beside this compose so the token stays out of git. Token scopes
-      # and the full config reference are in the README.
+      # Required. Keep the token in a .env file beside this compose; see the README for token scopes.
       GITHUB_OWNER: "${GITHUB_OWNER:?set GITHUB_OWNER - the login whose repos to scan}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:?set GITHUB_TOKEN - needs repo + Actions + code-scanning read}"
       SCAN_INTERVAL: "15m"  # Go duration between scans; "off" = resident-idle (external trigger)
-      LOOKBACK_HOURS: "72"  # how far back to consider failed runs
-      EXCLUDE_REPOS: ""  # comma-separated bare repo names to skip
-      LOG_LEVEL: "info"
-
-    # Writable /tmp for the health marker + run-dedup state; no volume (history lives in Loki).
-    tmpfs:
-      - "/tmp:size=16m,mode=1777,noexec,nosuid,nodev"
