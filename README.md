@@ -151,10 +151,6 @@ services:
       # Optional noise filters (defaults shown), raw GitHub search qualifiers:
       # PR_EXCLUDE_QUERY: "-author:app/renovate"
       # ISSUE_EXCLUDE_QUERY: "-author:app/renovate -label:renovate -label:auto-generated"
-
-    # Writable /tmp for the health marker + the dedup state file (seen-runs.json).
-    tmpfs:
-      - "/tmp:size=16m,mode=1777,noexec,nosuid,nodev"
 ```
 
 The image is published to `ghcr.io/cplieger/github-scout`. Pin a digest in
@@ -351,15 +347,37 @@ the container unhealthy.
   `gcr.io/distroless/static` with no package manager or shell to exploit.
 - **No listening port.** There is no HTTP server; nothing to reach from the
   network. Output is stdout; health is a file marker.
-- **Minimal state on tmpfs.** The only filesystem writes are the `/tmp/.healthy`
-  marker and a small `/tmp/seen-runs.json` dedup file, both on a
-  `noexec,nosuid,nodev` tmpfs; no database, no persistent volume.
+- **Minimal writable state.** The only filesystem writes are the `/tmp/.healthy`
+  marker and a small `/tmp/seen-runs.json` dedup file; no database, no persistent
+  volume. Under the hardened profile below, both live on a `noexec,nosuid,nodev`
+  tmpfs.
 - **Minimal supply chain.** No non-`cplieger` runtime dependencies; the
   `cplieger` `httpx` and `health` libraries provide retry/backoff and the health
   probe. Response bodies are capped with `io.LimitReader`; URL path segments
   built from input are validated to reject traversal and injection characters.
 - **Secret hygiene.** The token is sent only to `api.github.com` and is never
   written to logs.
+
+### Hardened deployment
+
+To lock the container down further, layer these directives onto the Quick
+start service:
+
+```yaml
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - "/tmp:size=16m,mode=1777,noexec,nosuid,nodev"
+```
+
+`read_only: true` makes the root filesystem read-only, so the file-marker
+health probe needs a writable `/tmp`; the tmpfs supplies it. `size=16m`
+covers both the `/tmp/.healthy` marker and the `/tmp/seen-runs.json`
+run-dedup state. Without `read_only`, `/tmp` is writable on the container
+layer and no tmpfs is needed.
 
 ## Limitations
 
