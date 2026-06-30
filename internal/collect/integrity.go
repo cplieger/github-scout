@@ -22,11 +22,20 @@ import (
 //     the dashboard's Scan Integrity tile reddens. A single incidental per-repo
 //     failure — a transient 5xx, or a private repo without GitHub Advanced
 //     Security returning 403 — lands here and is tolerated, not paged.
-//   - escalated (`scan degraded`, ERROR-level): a SYSTEMIC failure — a rejected
-//     token (401) or a rate limit (429), which poison every call — OR discovery
-//     returned zero repos (a valid token that can see nothing, so nothing was
-//     scanned) — OR a signal blind across the board (every repo that has it
-//     failed, or a single-call search failed). This is what an alert fires on.
+//   - escalated (`scan degraded`, ERROR-level): a SYSTEMIC failure — a token
+//     rejected on EVERY read this scan (a pervasive 401, see tokenInvalid) or a
+//     rate limit (429), which poison the whole scan — OR discovery returned
+//     zero repos (a valid token that can see nothing, so nothing was scanned)
+//     — OR a signal blind across the board (every repo that has it failed, or a
+//     single-call search failed). This is what an alert fires on.
+//
+// A SPARSE 401 — one rejected among reads that otherwise succeeded — is NOT
+// systemic: GitHub returns intermittent 401s under a secondary-rate-limit burst
+// even on a valid token (and discovery, on the same token, already succeeded to
+// reach here). Such a 401 reddens the integrity tile via failed_signals but
+// does NOT page as a dead credential. It still escalates if it happens to blind
+// an entire signal — via the runsBlind / codeScanningBlind / signal_blind paths
+// (cause named by signal), not as token_invalid.
 //
 // A repo with no code scanning (model.ErrNoCodeScanning, GitHub's 404) counts
 // as neither readable nor failed, so it never dilutes the "code scanning blind
@@ -34,15 +43,17 @@ import (
 // DOES have code scanning) still escalates even when other repos simply lack
 // the feature.
 type scanIntegrity struct {
-	runsOK       int
-	runsFailed   int
-	csOK         int // code-scanning reads that succeeded
-	csFailed     int // code-scanning reads that failed (excludes ErrNoCodeScanning)
-	prsFailed    bool
-	issuesFailed bool
-	tokenInvalid bool
-	rateLimited  bool
-	noRepos      bool // discovery succeeded but returned zero repos: nothing was scanned
+	runsOK        int
+	runsFailed    int
+	csOK          int  // code-scanning reads that succeeded
+	csFailed      int  // code-scanning reads that failed (excludes ErrNoCodeScanning)
+	prsOK         bool // the cross-repo PR search returned (proves the token can read)
+	prsFailed     bool
+	issuesOK      bool // the cross-repo issue search returned (proves the token can read)
+	issuesFailed  bool
+	tokenRejected bool // >=1 read returned 401; systemic ONLY if pervasive (see tokenInvalid)
+	rateLimited   bool
+	noRepos       bool // discovery succeeded but returned zero repos: nothing was scanned
 }
 
 // outcome categorises one signal read for the integrity tally.
@@ -76,7 +87,7 @@ func (sc *scanIntegrity) classify(err error) outcome {
 	// A real read failure: flag the fleet-wide credential / quota classes.
 	switch {
 	case errors.Is(err, model.ErrTokenInvalid):
-		sc.tokenInvalid = true
+		sc.tokenRejected = true
 	case errors.Is(err, model.ErrRateLimited):
 		sc.rateLimited = true
 	}
@@ -91,8 +102,23 @@ func (sc *scanIntegrity) classify(err error) outcome {
 // separately by Scan (it flips health); this is the success-with-nothing case.
 func (sc *scanIntegrity) recordDiscovery(repoCount int) { sc.noRepos = repoCount == 0 }
 
-func (sc *scanIntegrity) recordPRs(err error)    { sc.prsFailed = sc.classify(err) == outcomeFailed }
-func (sc *scanIntegrity) recordIssues(err error) { sc.issuesFailed = sc.classify(err) == outcomeFailed }
+func (sc *scanIntegrity) recordPRs(err error) {
+	switch sc.classify(err) {
+	case outcomeOK:
+		sc.prsOK = true
+	case outcomeFailed:
+		sc.prsFailed = true
+	}
+}
+
+func (sc *scanIntegrity) recordIssues(err error) {
+	switch sc.classify(err) {
+	case outcomeOK:
+		sc.issuesOK = true
+	case outcomeFailed:
+		sc.issuesFailed = true
+	}
+}
 
 func (sc *scanIntegrity) recordRuns(err error) {
 	switch sc.classify(err) {
@@ -156,8 +182,33 @@ func (sc *scanIntegrity) failedSignals() string {
 func (sc *scanIntegrity) runsBlind() bool         { return sc.runsFailed > 0 && sc.runsOK == 0 }
 func (sc *scanIntegrity) codeScanningBlind() bool { return sc.csFailed > 0 && sc.csOK == 0 }
 
-// systemic reports a credential / quota failure that affects the whole scan.
-func (sc *scanIntegrity) systemic() bool { return sc.tokenInvalid || sc.rateLimited }
+// anyReadSucceeded reports whether at least one signal read returned data this
+// scan (any repo's runs or code scanning, or either cross-repo search). It is
+// the proof the token is not globally rejected: a genuinely invalid token 401s
+// every call, so one successful read means a 401 seen elsewhere this scan was
+// transient (a per-call secondary-rate-limit rejection under burst), not a dead
+// credential.
+func (sc *scanIntegrity) anyReadSucceeded() bool {
+	return sc.runsOK > 0 || sc.csOK > 0 || sc.prsOK || sc.issuesOK
+}
+
+// tokenInvalid reports a PERVASIVE 401: a read returned 401 AND nothing was read
+// this scan. Gating on "nothing read" (rather than firing on any single 401) is
+// the fix for transient-401 false alarms — GitHub returns intermittent 401s
+// under a secondary-rate-limit burst even on a valid token, and discovery, which
+// runs first on the same token, already succeeded to reach the per-signal reads.
+// A sparse 401 among successful reads is left to the per-signal blind paths
+// (which still escalate a fully-dark signal, by signal), while a truly dead
+// token 401s discovery itself, handled in Scan (which flips health).
+func (sc *scanIntegrity) tokenInvalid() bool {
+	return sc.tokenRejected && !sc.anyReadSucceeded()
+}
+
+// systemic reports a credential / quota failure that affects the whole scan: a
+// pervasive token rejection, or any rate limit (a 429 surfaces only after httpx
+// exhausts its backoff retries, so it signals a sustained quota problem worth
+// surfacing even on a single signal — unlike a sparse 401).
+func (sc *scanIntegrity) systemic() bool { return sc.tokenInvalid() || sc.rateLimited }
 
 // escalate reports whether this scan's degradation warrants an ERROR-level
 // `scan degraded` line (and thus an alert): a systemic failure, a scan that
@@ -171,8 +222,8 @@ func (sc *scanIntegrity) escalate() bool {
 // `scan degraded` line, most-actionable first.
 func (sc *scanIntegrity) diagnosis() (cause, reason string) {
 	switch {
-	case sc.tokenInvalid:
-		return "token_invalid", "the GitHub token was rejected (401); every reported 0 this scan is unverified, not confirmed empty"
+	case sc.tokenInvalid():
+		return "token_invalid", "the GitHub token was rejected (401) and no signal could be read this scan; every reported 0 is unverified, not confirmed empty"
 	case sc.rateLimited:
 		return "rate_limited", "GitHub rate-limited the scan (429); some signals could not be read, so their reported 0 is unverified"
 	case sc.noRepos:

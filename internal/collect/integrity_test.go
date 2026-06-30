@@ -66,13 +66,17 @@ func TestScanDegradedReportsBlindCodeScanning(t *testing.T) {
 	}
 }
 
-// TestScanTokenInvalidEscalates: a 401 (rejected token) is systemic — it
-// poisons every call — so it escalates with cause=token_invalid regardless of
-// which signal hit it, and never flips health (a restart cannot fix a dead
-// token).
+// TestScanTokenInvalidEscalates: a PERVASIVE 401 — every read this scan is
+// rejected, including both cross-repo searches — is a genuinely dead/blocked
+// token, so it escalates with cause=token_invalid and never flips health (a
+// restart cannot fix a dead token). Contrast TestScanSparse401NotTokenInvalid,
+// where a read still succeeds and the lone 401 is treated as transient.
 func TestScanTokenInvalidEscalates(t *testing.T) {
 	fc := &fakeClient{
 		repos:     []model.Repo{{Owner: "cplieger", Name: "x"}},
+		prsErr:    model.ErrTokenInvalid,
+		issuesErr: model.ErrTokenInvalid,
+		runsErr:   map[string]error{"cplieger/x": model.ErrTokenInvalid},
 		alertsErr: map[string]error{"cplieger/x": model.ErrTokenInvalid},
 	}
 	c := newCollector(t, fc, nil)
@@ -82,10 +86,44 @@ func TestScanTokenInvalidEscalates(t *testing.T) {
 		t.Errorf("a 401 must not flip health (a restart cannot fix a dead token)")
 	}
 	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("a 401 must emit one \"scan degraded\" line, got %d", rec.countMsg("scan degraded"))
+		t.Fatalf("a pervasive 401 must emit one \"scan degraded\" line, got %d", rec.countMsg("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "token_invalid" {
-		t.Errorf("cause = %q, want token_invalid for a 401", cause)
+		t.Errorf("cause = %q, want token_invalid for a pervasive 401", cause)
+	}
+}
+
+// TestScanSparse401NotTokenInvalid is the regression test for the transient-401
+// misclassification — the bug behind a spurious token_invalid page. A 401 on
+// one repo's code scanning while ANOTHER repo's code scanning reads fine is not
+// a dead token: GitHub returns intermittent 401s under a secondary-rate-limit
+// burst even on a valid token. So the scan stays degraded telemetry only — it
+// lists code_scanning in failed_signals (the integrity tile reddens) but must
+// NOT emit a "scan degraded" escalation, and certainly not cause=token_invalid,
+// because a successful read proves the token works. Before the fix, any single
+// 401 escalated as token_invalid.
+func TestScanSparse401NotTokenInvalid(t *testing.T) {
+	fc := &fakeClient{
+		repos: []model.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
+		alerts: map[string][]model.CodeScanningAlert{
+			"cplieger/b": {{Repo: "cplieger/b", Number: 1}},
+		},
+		alertsErr: map[string]error{"cplieger/a": model.ErrTokenInvalid},
+	}
+	c := newCollector(t, fc, nil)
+	rec := &recordingHandler{}
+	c.logger = slog.New(rec)
+	if !c.Scan(context.Background()) {
+		t.Errorf("a transient 401 must not flip health")
+	}
+	if d, ok := rec.boolAttr("scan complete", "degraded"); !ok || !d {
+		t.Errorf("degraded = %v (found=%v), want true (one repo's code scanning was unreadable)", d, ok)
+	}
+	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "code_scanning" {
+		t.Errorf("failed_signals = %q, want code_scanning", got)
+	}
+	if n := rec.countMsg("scan degraded"); n != 0 {
+		t.Errorf("a sparse 401 with another read succeeding must NOT escalate; got %d \"scan degraded\" lines", n)
 	}
 }
 
@@ -264,13 +302,17 @@ func TestScanRunsBlindEscalates(t *testing.T) {
 	}
 }
 
-// TestScanSearchAuthEscalates: a 401 on the cross-repo PR search both blinds
-// that single-call signal and flags the systemic token problem; cause is
-// token_invalid (the most actionable diagnosis).
-func TestScanSearchAuthEscalates(t *testing.T) {
+// TestScanSearch401IsSignalBlindNotToken: a 401 confined to the cross-repo PR
+// search, with runs / issues / code scanning all reading fine, blinds that
+// single-call signal (the whole open-PR set is unverified this scan) so it
+// escalates — but NOT as token_invalid, because another read succeeded, proving
+// the token works. The diagnosis falls to signal_blind. Before the transient-401
+// fix this single 401 returned token_invalid.
+func TestScanSearch401IsSignalBlindNotToken(t *testing.T) {
 	fc := &fakeClient{
 		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}},
 		prsErr: model.ErrTokenInvalid,
+		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 1}}},
 	}
 	c := newCollector(t, fc, nil)
 	rec := &recordingHandler{}
@@ -281,10 +323,10 @@ func TestScanSearchAuthEscalates(t *testing.T) {
 		t.Errorf("failed_signals = %q, want it to include open_prs", got)
 	}
 	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("a 401 on the PR search must escalate once, got %d", rec.countMsg("scan degraded"))
+		t.Fatalf("a blind PR search must escalate once, got %d", rec.countMsg("scan degraded"))
 	}
-	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "token_invalid" {
-		t.Errorf("cause = %q, want token_invalid", cause)
+	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "signal_blind" {
+		t.Errorf("cause = %q, want signal_blind (the token works; only the PR search was dark)", cause)
 	}
 }
 
@@ -410,15 +452,19 @@ func TestScanErrCountSumsPerRepoFailures(t *testing.T) {
 }
 
 // TestScanTokenInvalidBeatsRateLimited pins the top diagnosis precedence rung:
-// when one scan trips BOTH systemic flags (a 401 on one signal, a 429 on
-// another), the most-actionable cause wins — token_invalid outranks
+// when one scan trips BOTH systemic flags pervasively (some reads 401, some 429,
+// none succeed), the most-actionable cause wins — token_invalid outranks
 // rate_limited. Without this a rung-swap mutant in diagnosis() survives (no
-// other test sets both systemic flags at once).
+// other test sets both systemic flags at once). All reads must fail so the
+// token-rejection is pervasive (a sparse 401 alongside a successful read is no
+// longer systemic).
 func TestScanTokenInvalidBeatsRateLimited(t *testing.T) {
 	fc := &fakeClient{
 		repos:     []model.Repo{{Owner: "cplieger", Name: "x"}},
 		prsErr:    model.ErrTokenInvalid,
 		issuesErr: model.ErrRateLimited,
+		runsErr:   map[string]error{"cplieger/x": model.ErrTokenInvalid},
+		alertsErr: map[string]error{"cplieger/x": model.ErrRateLimited},
 	}
 	c := newCollector(t, fc, nil)
 	rec := &recordingHandler{}
