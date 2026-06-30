@@ -184,16 +184,16 @@ is logged at startup).
 
 ## Configuration reference
 
-| Variable                | Description                                                                 | Default        | Required |
-| ----------------------- | --------------------------------------------------------------------------- | -------------- | -------- |
-| `GITHUB_OWNER`          | GitHub login (user or org) whose repositories are scanned                   | ``             | Yes      |
-| `GITHUB_TOKEN`          | Personal access token (see scopes above)                                    | ``             | Yes      |
-| `SCAN_INTERVAL`         | Gap between scans, a Go duration (`15m`, `1h`). `off` = resident-idle       | `15m`          | No       |
-| `LOOKBACK_HOURS`        | How far back each scan considers failed runs (also bounds the dedup set)    | `72`           | No       |
-| `EXCLUDE_REPOS`         | Comma-separated **bare** repo names to skip (silences all signals)          | ``             | No       |
-| `CODE_SCANNING_EXCLUDE_REPOS` | Comma-separated **bare** repo names to skip for **code scanning only** (runs/PRs/issues still scanned) — for private repos without GitHub Advanced Security | `` | No |
-| `LOG_LEVEL`             | `debug`, `info`, `warn`, `error`                                            | `info`         | No       |
-| `TZ`                    | Container timezone                                                          | `Europe/Paris` | No       |
+| Variable                      | Description                                                                  | Default        | Required |
+| ----------------------------- | ---------------------------------------------------------------------------- | -------------- | -------- |
+| `GITHUB_OWNER`                | GitHub login (user or org) whose repositories are scanned                    | ``             | Yes      |
+| `GITHUB_TOKEN`                | Personal access token (see scopes above)                                     | ``             | Yes      |
+| `SCAN_INTERVAL`               | Gap between scans, a Go duration (`15m`, `1h`). `off` = resident-idle        | `15m`          | No       |
+| `LOOKBACK_HOURS`              | How far back each scan considers failed runs (also bounds the dedup set)     | `72`           | No       |
+| `EXCLUDE_REPOS`               | Comma-separated **bare** repo names to skip (silences all signals)           | ``             | No       |
+| `CODE_SCANNING_EXCLUDE_REPOS` | Comma-separated bare repo names to skip for code scanning only (others kept) | ``             | No       |
+| `LOG_LEVEL`                   | `debug`, `info`, `warn`, `error`                                             | `info`         | No       |
+| `TZ`                          | Container timezone                                                           | `Europe/Paris` | No       |
 
 Out-of-range or unparseable values fall back to the default (a bad
 `SCAN_INTERVAL` keeps scanning at 15m; an out-of-range `LOOKBACK_HOURS` is
