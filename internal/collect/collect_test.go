@@ -80,6 +80,56 @@ func TestScanHealthyWithNoSignals(t *testing.T) {
 	}
 }
 
+// TestScanCodeScanningExcludeSkipsSignalNotRepo pins CODE_SCANNING_EXCLUDE_REPOS:
+// a repo in the set has its code-scanning read skipped entirely — no API call,
+// no failure, nothing counted toward degraded — while still being scanned for
+// runs (and, cross-repo, PRs/issues). This silences a private repo whose
+// code-scanning API always 403s (no GitHub Advanced Security) WITHOUT dropping
+// its other signals the way EXCLUDE_REPOS would. The non-excluded repo's code
+// scanning is still read.
+func TestScanCodeScanningExcludeSkipsSignalNotRepo(t *testing.T) {
+	fc := &fakeClient{
+		repos: []model.Repo{{Owner: "cplieger", Name: "private"}, {Owner: "cplieger", Name: "public"}},
+		runs: map[string][]model.WorkflowRun{
+			"cplieger/private": {{Repo: "cplieger/private", RunID: 1, Conclusion: "success", CreatedAt: fixedNow().Add(-time.Hour)}},
+		},
+		// If code scanning were attempted for the excluded repo it would 403;
+		// the exclude means we never call it, so this error must never surface.
+		alertsErr: map[string]error{"cplieger/private": errors.New("alerts 403")},
+		alerts:    map[string][]model.CodeScanningAlert{"cplieger/public": {{Repo: "cplieger/public", Number: 1}}},
+	}
+	c := New(&Deps{
+		Client:              fc,
+		Logger:              slog.New(slog.NewTextHandler(testWriter{t}, nil)),
+		Now:                 fixedNow,
+		Owner:               "cplieger",
+		Lookback:            72 * time.Hour,
+		CodeScanningExclude: map[string]bool{"private": true},
+	})
+	rec := &recordingHandler{}
+	c.logger = slog.New(rec)
+	c.Scan(context.Background())
+
+	// The excluded repo's would-be 403 must not surface: not degraded, no signal.
+	if d, _ := rec.boolAttr("scan complete", "degraded"); d {
+		t.Errorf("an excluded-from-code-scanning repo's 403 must not mark the scan degraded")
+	}
+	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "" {
+		t.Errorf("failed_signals = %q, want empty (the only code-scanning failure was on an excluded repo)", got)
+	}
+	if rec.countMsg("scan degraded") != 0 {
+		t.Errorf("excluding a repo's code scanning must not escalate; got %d", rec.countMsg("scan degraded"))
+	}
+	// The excluded repo is still scanned for runs (event-once "workflow run").
+	if n := rec.countMsg("workflow run"); n != 1 {
+		t.Errorf("workflow run count = %d, want 1 (the excluded repo's runs are still scanned)", n)
+	}
+	// The non-excluded repo's code scanning is still read.
+	if n := rec.countMsg("code scanning alert"); n != 1 {
+		t.Errorf("code scanning alert count = %d, want 1 (the non-excluded repo is still read)", n)
+	}
+}
+
 func TestScanPartialFailuresStillHealthy(t *testing.T) {
 	// PR search, issue search, run listing, and alert listing all error, but
 	// discovery succeeded — the scan must stay healthy while REPORTING the
