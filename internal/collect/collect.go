@@ -53,6 +53,7 @@ type Collector struct {
 	now          func() time.Time
 	seen         map[int64]time.Time // run RunID -> CreatedAt, pruned to lookback
 	exclude      map[string]bool     // bare repo names to skip across all signals
+	csExclude    map[string]bool     // bare repo names to skip for code scanning only
 	owner        string
 	prExclude    string // raw search qualifiers to filter PR noise (e.g. Renovate)
 	issueExclude string // raw search qualifiers to filter issue noise (Renovate, auto-generated)
@@ -73,13 +74,14 @@ type apiClient interface {
 // Deps are the constructor arguments for New. A nil Logger falls back to
 // slog.Default; a nil Now falls back to time.Now.
 type Deps struct {
-	Client       apiClient
-	Logger       *slog.Logger
-	Now          func() time.Time
-	Exclude      map[string]bool
-	Owner        string
-	PRExclude    string
-	IssueExclude string
+	Client              apiClient
+	Logger              *slog.Logger
+	Now                 func() time.Time
+	Exclude             map[string]bool
+	CodeScanningExclude map[string]bool
+	Owner               string
+	PRExclude           string
+	IssueExclude        string
 	// StatePath, when non-empty, is where the run dedup set is persisted
 	// (atomic JSON) at the end of each scan and reloaded by New. Set it for
 	// trigger-mode deployments (each trigger is a fresh process) to a path
@@ -109,6 +111,7 @@ func New(d *Deps) *Collector {
 		now:          now,
 		seen:         make(map[int64]time.Time),
 		exclude:      d.Exclude,
+		csExclude:    d.CodeScanningExclude,
 		owner:        d.Owner,
 		prExclude:    d.PRExclude,
 		issueExclude: d.IssueExclude,
@@ -181,9 +184,18 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 		newRuns += runs
 		newFailures += failures
 		ig.recordRuns(runErr)
-		a, alertErr := c.collectAlerts(ctx, repo)
-		alerts += a
-		ig.recordAlerts(alertErr)
+		if c.codeScanningExcluded(repo.Name) {
+			// Code scanning is intentionally skipped for this repo (e.g. a
+			// private repo without GitHub Advanced Security, whose API always
+			// 403s). Treat it like a repo with no code scanning: neither a
+			// readable signal nor a failure, so it never marks the scan degraded
+			// nor dilutes the "blind for every repo" test. Other signals stand.
+			c.logger.Debug("skipping code scanning for excluded repo", "repo", repo.FullName())
+		} else {
+			a, alertErr := c.collectAlerts(ctx, repo)
+			alerts += a
+			ig.recordAlerts(alertErr)
+		}
 	}
 
 	c.prune(cutoff)
@@ -352,6 +364,17 @@ func (c *Collector) excludedRepo(fullName string) bool {
 // single place the read-side normalization lives.
 func (c *Collector) excludedName(name string) bool {
 	return c.exclude[strings.ToLower(name)]
+}
+
+// codeScanningExcluded reports whether a repo's code-scanning signal should be
+// skipped because the repo is in CODE_SCANNING_EXCLUDE_REPOS. Unlike
+// excludedName (which drops a repo from EVERY signal), this leaves the repo's
+// runs / PR / issue signals intact and only suppresses the code-scanning read
+// — for repos whose code-scanning API always fails expectedly (a private repo
+// without GitHub Advanced Security 403s every scan). Lowercases its argument
+// because the set (parseExcludes) is keyed by lowercased names.
+func (c *Collector) codeScanningExcluded(name string) bool {
+	return c.csExclude[strings.ToLower(name)]
 }
 
 // prune drops run dedup entries older than cutoff. The Actions query

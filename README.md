@@ -146,7 +146,8 @@ services:
       GITHUB_TOKEN: "ghp_xxx"            # see token scopes below
       SCAN_INTERVAL: "15m"               # Go duration between scans; "off" = resident-idle
       LOOKBACK_HOURS: "72"               # how far back to consider failed runs
-      EXCLUDE_REPOS: ""                  # comma-separated bare repo names to skip
+      EXCLUDE_REPOS: ""                  # comma-separated bare repo names to skip (all signals)
+      CODE_SCANNING_EXCLUDE_REPOS: ""    # skip code scanning only (e.g. private repos without GHAS)
       LOG_LEVEL: "info"
       # Optional noise filters (defaults shown), raw GitHub search qualifiers:
       # PR_EXCLUDE_QUERY: "-author:app/renovate"
@@ -175,8 +176,11 @@ works, and both keep discovery dynamic (new repos auto-included):
 
 github-scout degrades gracefully if a permission is missing: a repo without code
 scanning (or a token lacking that permission) simply yields no alerts rather than
-failing the scan. The token is only ever sent to `api.github.com` as a Bearer
-header and is never logged (only its presence is logged at startup).
+failing the scan. A private repo on a plan without GitHub Advanced Security always
+returns 403 on code scanning; list it in `CODE_SCANNING_EXCLUDE_REPOS` to skip
+just that signal (its runs, PRs, and issues keep scanning). The token is only ever
+sent to `api.github.com` as a Bearer header and is never logged (only its presence
+is logged at startup).
 
 ## Configuration reference
 
@@ -187,6 +191,7 @@ header and is never logged (only its presence is logged at startup).
 | `SCAN_INTERVAL`         | Gap between scans, a Go duration (`15m`, `1h`). `off` = resident-idle       | `15m`          | No       |
 | `LOOKBACK_HOURS`        | How far back each scan considers failed runs (also bounds the dedup set)    | `72`           | No       |
 | `EXCLUDE_REPOS`         | Comma-separated **bare** repo names to skip (silences all signals)          | ``             | No       |
+| `CODE_SCANNING_EXCLUDE_REPOS` | Comma-separated **bare** repo names to skip for **code scanning only** (runs/PRs/issues still scanned) — for private repos without GitHub Advanced Security | `` | No |
 | `LOG_LEVEL`             | `debug`, `info`, `warn`, `error`                                            | `info`         | No       |
 | `TZ`                    | Container timezone                                                          | `Europe/Paris` | No       |
 
@@ -270,17 +275,23 @@ clear. Per-signal collection failures do NOT flip health (a restart cannot fix
 a missing token scope or a rate limit); instead they are reported as data
 integrity. An incidental per-repo failure — a transient error, or one private
 repo without GitHub Advanced Security returning 403 on code scanning — is
-counted as `degraded` (it reddens the dashboard tile) but is NOT paged. A
-SYSTEMIC failure escalates to a distinct `error`-level `scan degraded` line
-carrying a machine `cause`, a human `reason`, and `failed_signals`:
-`token_invalid` (401) or `rate_limited` (429), which poison every call;
-`no_repos_visible` when discovery succeeds but returns zero repositories (a
-token that lost repo visibility, so nothing was scanned); `code_scanning_blind`
-/ `runs_blind` when a per-repo signal could not be read for ANY repo that has it
-(e.g. a missing token scope — a repo that simply lacks code scanning is
-excluded, so it never masks a real blackout); or `signal_blind` when a
-cross-repo search (PRs or issues) fails. That is what an alert fires on, instead
-of the failure hiding behind a quiet all-zero scan.
+counted as `degraded` (it reddens the dashboard tile) but is NOT paged; to stop
+an always-403 private repo from reddening every scan, list it in
+`CODE_SCANNING_EXCLUDE_REPOS`, which skips just its code-scanning read while
+keeping its other signals. A SYSTEMIC failure escalates to a distinct
+`error`-level `scan degraded` line carrying a machine `cause`, a human `reason`,
+and `failed_signals`: `token_invalid` when a 401 rejected the token AND no
+signal could be read this scan — a genuinely dead or blocked token (a single
+transient 401 alongside a successful read is a secondary-rate-limit blip,
+reported as `degraded` but not escalated, since GitHub returns intermittent 401s
+under burst even on a valid token); `rate_limited` (429); `no_repos_visible`
+when discovery succeeds but returns zero repositories (a token that lost repo
+visibility, so nothing was scanned); `code_scanning_blind` / `runs_blind` when a
+per-repo signal could not be read for ANY repo that has it (e.g. a missing token
+scope — a repo that simply lacks code scanning, or one listed in
+`CODE_SCANNING_EXCLUDE_REPOS`, is excluded, so it never masks a real blackout);
+or `signal_blind` when a cross-repo search (PRs or issues) fails. That is what an
+alert fires on, instead of the failure hiding behind a quiet all-zero scan.
 
 ## Grafana integration
 
@@ -322,7 +333,8 @@ Tables render the `url` field as a click-through link. Because the events are
 plain logs, you can also write a Loki ruler alert
 (`count_over_time(... [1h]) > 0`) to be notified the moment anything breaks. The
 homelab deployment ships two: one fires on the `scan degraded` line (a scan that
-ran but went blind — a dead/under-scoped token or a rate limit), and a liveness
+ran but went blind — a pervasively rejected token, a signal dark across every
+repo, or a rate limit), and a liveness
 rule fires when no `scan complete` line appears for 40m (a wedged container or a
 token revoked at discovery, which the Scan Integrity tile cannot show because no
 scan ran).

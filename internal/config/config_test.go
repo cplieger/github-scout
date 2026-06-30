@@ -16,6 +16,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("SCAN_INTERVAL", "")
 	t.Setenv("LOOKBACK_HOURS", "")
 	t.Setenv("EXCLUDE_REPOS", "")
+	t.Setenv("CODE_SCANNING_EXCLUDE_REPOS", "")
 	t.Setenv("LOG_LEVEL", "")
 
 	cfg := Load()
@@ -30,6 +31,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if len(cfg.ExcludeRepos) != 0 {
 		t.Errorf("ExcludeRepos = %v, want empty", cfg.ExcludeRepos)
+	}
+	if len(cfg.CodeScanningExcludeRepos) != 0 {
+		t.Errorf("CodeScanningExcludeRepos = %v, want empty", cfg.CodeScanningExcludeRepos)
 	}
 }
 
@@ -371,5 +375,25 @@ func TestExcludeReposCaseInsensitive(t *testing.T) {
 	}
 	if !cfg.ExcludeRepos["other"] {
 		t.Errorf("ExcludeRepos missing lowercased key other: %v", cfg.ExcludeRepos)
+	}
+}
+
+// TestLoadParsesCodeScanningExcludes pins CODE_SCANNING_EXCLUDE_REPOS parsing:
+// it is a SEPARATE set from EXCLUDE_REPOS, trimmed and lowercased the same way,
+// so a private repo without GitHub Advanced Security can be silenced for code
+// scanning only (its runs / PRs / issues stay scanned). Mixed case and a
+// trailing empty entry confirm the shared parseExcludes normalization.
+func TestLoadParsesCodeScanningExcludes(t *testing.T) {
+	t.Setenv("EXCLUDE_REPOS", "")
+	t.Setenv("CODE_SCANNING_EXCLUDE_REPOS", ".kiro, Homelab ,")
+	cfg := Load()
+	if !cfg.CodeScanningExcludeRepos[".kiro"] || !cfg.CodeScanningExcludeRepos["homelab"] {
+		t.Errorf("CodeScanningExcludeRepos = %v, want .kiro+homelab (lowercased)", cfg.CodeScanningExcludeRepos)
+	}
+	if cfg.CodeScanningExcludeRepos[""] {
+		t.Errorf("empty exclude entry should be dropped")
+	}
+	if len(cfg.ExcludeRepos) != 0 {
+		t.Errorf("EXCLUDE_REPOS must stay independent of CODE_SCANNING_EXCLUDE_REPOS; got %v", cfg.ExcludeRepos)
 	}
 }

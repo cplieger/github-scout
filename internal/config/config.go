@@ -1,9 +1,9 @@
 // Package config parses github-scout configuration from environment
 // variables. The env var names (GITHUB_TOKEN, GITHUB_OWNER, SCAN_INTERVAL,
-// LOOKBACK_HOURS, LOG_LEVEL, EXCLUDE_REPOS, PR_EXCLUDE_QUERY,
-// ISSUE_EXCLUDE_QUERY) are an inviolate compose-file contract — the
-// in-memory shape may evolve, but the names and parsing semantics must
-// stay stable.
+// LOOKBACK_HOURS, LOG_LEVEL, EXCLUDE_REPOS, CODE_SCANNING_EXCLUDE_REPOS,
+// PR_EXCLUDE_QUERY, ISSUE_EXCLUDE_QUERY) are an inviolate compose-file
+// contract — the in-memory shape may evolve, but the names and parsing
+// semantics must stay stable.
 //
 // SCAN_INTERVAL follows the fleet's scheduled-app convention (DUMP_INTERVAL,
 // SCHEDULE_INTERVAL, SYNC_INTERVAL, …): a Go duration string, with the
@@ -59,6 +59,14 @@ type Config struct {
 	// all signals. Used to silence repos that legitimately fail or that the
 	// owner does not want surfaced. Keyed by bare name for O(1) lookup.
 	ExcludeRepos map[string]bool
+	// CodeScanningExcludeRepos is a set of repo names (not full names) to skip
+	// for the code-scanning signal ONLY, while still scanning them for runs,
+	// PRs, and issues. Use it for repos whose code-scanning API always fails
+	// expectedly — a private repo on a plan without GitHub Advanced Security
+	// 403s every scan — so that expected failure stops marking every scan
+	// degraded, without dropping the repo's other signals (which EXCLUDE_REPOS
+	// would). Keyed by bare name for O(1) lookup.
+	CodeScanningExcludeRepos map[string]bool
 	// Token is the GitHub PAT used for API auth. Never logged.
 	Token string
 	// Owner is the GitHub login (user or org) whose repos are scanned.
@@ -81,14 +89,15 @@ type Config struct {
 // Load reads configuration from the environment with sensible defaults.
 func Load() Config {
 	return Config{
-		Token:        strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
-		Owner:        strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
-		ExcludeRepos: parseExcludes(os.Getenv("EXCLUDE_REPOS")),
-		PRExclude:    getEnv("PR_EXCLUDE_QUERY", DefaultPRExclude),
-		IssueExclude: getEnv("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
-		ScanInterval: parseScanInterval(os.Getenv("SCAN_INTERVAL")),
-		Lookback:     time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
-		LogLevel:     parseLogLevel(os.Getenv("LOG_LEVEL")),
+		Token:                    strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
+		Owner:                    strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
+		ExcludeRepos:             parseExcludes(os.Getenv("EXCLUDE_REPOS")),
+		CodeScanningExcludeRepos: parseExcludes(os.Getenv("CODE_SCANNING_EXCLUDE_REPOS")),
+		PRExclude:                getEnv("PR_EXCLUDE_QUERY", DefaultPRExclude),
+		IssueExclude:             getEnv("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
+		ScanInterval:             parseScanInterval(os.Getenv("SCAN_INTERVAL")),
+		Lookback:                 time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
+		LogLevel:                 parseLogLevel(os.Getenv("LOG_LEVEL")),
 	}
 }
 
