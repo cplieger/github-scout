@@ -1,6 +1,6 @@
 # github-scout
 
-[![Image Size](https://ghcr-badge.egpl.dev/cplieger/github-scout/size)](https://github.com/cplieger/github-scout/pkgs/container/github-scout)
+[![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/github-scout/badges/size.json)](https://github.com/cplieger/github-scout/pkgs/container/github-scout)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
 [![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/github-scout)](https://goreportcard.com/report/github.com/cplieger/github-scout)
