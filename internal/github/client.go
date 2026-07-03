@@ -219,7 +219,7 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 // mapStatusError translates the SYSTEMIC transport failures httpx.Retry can
 // return into the domain sentinels the collector escalates on, so
 // internal/collect classifies on meaning and never imports httpx. A 401
-// (rejected token) and a 429 (rate limit) are fleet-wide — they poison every
+// (rejected token) and a 429 (rate limit) are org-wide — they poison every
 // call this scan — so they become model.ErrTokenInvalid / model.ErrRateLimited
 // (the original status error is preserved in the chain for logging). Every
 // other failure passes through unchanged: a 403 (per-repo: Advanced Security

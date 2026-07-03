@@ -330,7 +330,7 @@ func TestCodeScanning403IsError(t *testing.T) {
 		t.Errorf("403 must NOT be mapped to the benign no-code-scanning sentinel")
 	}
 	// A 403 is per-repo (one private repo without GHAS, a missing scope), not
-	// a fleet-wide class, so it must map to NEITHER systemic sentinel; the
+	// an org-wide class, so it must map to NEITHER systemic sentinel; the
 	// collector then treats it as a plain per-repo failure that escalates only
 	// when code scanning is blind for every repo that has it.
 	if errors.Is(err, model.ErrTokenInvalid) || errors.Is(err, model.ErrRateLimited) {
@@ -343,7 +343,7 @@ func TestCodeScanning403IsError(t *testing.T) {
 // are the boundary half of the contract: the github client is the single place
 // that turns an HTTP status into meaning, so internal/collect can classify on
 // model sentinels without importing the HTTP transport. A regression that
-// stopped mapping 401/429 would silently downgrade a fleet-wide credential or
+// stopped mapping 401/429 would silently downgrade an org-wide credential or
 // rate-limit failure to a per-repo blip and fail to page.
 func TestStatus401MapsTokenInvalid(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

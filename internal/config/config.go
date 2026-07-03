@@ -5,7 +5,7 @@
 // contract — the in-memory shape may evolve, but the names and parsing
 // semantics must stay stable.
 //
-// SCAN_INTERVAL follows the fleet's scheduled-app convention (DUMP_INTERVAL,
+// SCAN_INTERVAL follows the shared scheduled-app convention (DUMP_INTERVAL,
 // SCHEDULE_INTERVAL, SYNC_INTERVAL, …): a Go duration string, with the
 // sentinels off / disabled / 0 / 0s selecting resident-idle mode (no
 // internal timer; scans are driven externally by `github-scout trigger`,
@@ -147,7 +147,7 @@ func getEnv(key, fallback string) string {
 
 // Valid reports whether the config has the minimum needed to run: an owner
 // to scan and a token to authenticate. Unauthenticated GitHub API access is
-// rate-limited to 60 req/hour, far too low for a fleet scan, so a missing
+// rate-limited to 60 req/hour, far too low for a multi-repo scan, so a missing
 // token is fatal misconfiguration rather than a degraded mode. Pointer
 // receiver: Config is large enough that copying it per call is wasteful.
 func (c *Config) Valid() bool {

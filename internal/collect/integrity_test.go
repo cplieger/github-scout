@@ -510,7 +510,7 @@ func TestScanZeroReposVisibleEscalates(t *testing.T) {
 // TestScanDiscoveryCancelIsCleanShutdown: a context cancellation during repo
 // discovery (a SIGTERM or deadline landing on the first API call) is a clean
 // shutdown, not a token failure — it must NOT log an ERROR "repo discovery
-// failed" (which reads like a dead token and bumps the fleet error panel) and
+// failed" (which reads like a dead token and bumps the shared error panel) and
 // must NOT flip health unhealthy, mirroring how the per-signal collectors treat
 // cancellation. Distinct from TestScanDiscoveryFailureUnhealthy, where a real
 // error correctly flips health.
@@ -532,7 +532,7 @@ func TestScanDiscoveryCancelIsCleanShutdown(t *testing.T) {
 // TestRecordRunsTalliesEachSuccessfulRead pins recordRuns' success accounting:
 // every OK runs read bumps the runsOK tally by exactly one, so after N
 // successful reads the tally is N. runsBlind() consults this tally
-// (runsFailed > 0 && runsOK == 0) to separate a fleet-wide runs blackout from an
+// (runsFailed > 0 && runsOK == 0) to separate an org-wide runs blackout from an
 // incidental single-repo miss, so a successful read must register as a positive
 // success — one good read is what proves "at least one repo's runs were
 // readable" and keeps an isolated failure from masquerading as a blackout.
