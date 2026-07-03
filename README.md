@@ -3,7 +3,6 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/github-scout/badges/size.json)](https://github.com/cplieger/github-scout/pkgs/container/github-scout)
 ![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)
 ![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)
-[![Go Report Card](https://goreportcard.com/badge/github.com/cplieger/github-scout)](https://goreportcard.com/report/github.com/cplieger/github-scout)
 [![Test coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/github-scout/badges/coverage.json)](https://github.com/cplieger/github-scout/actions/workflows/coverage.yml)
 [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/github-scout/badges/mutation.json)](https://github.com/cplieger/github-scout/issues?q=label%3Agremlins-tracker)
 [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13336/badge)](https://www.bestpractices.dev/projects/13336)
@@ -92,6 +91,8 @@ The four signals split into two shapes:
   stops appearing in later snapshots, and the dashboard reads the most recent
   scan as "what is open right now" (panels deduplicate by repo + number over a
   window slightly longer than the poll interval). No dedup state is needed.
+
+### State
 
 github-scout keeps **no database**; history lives in Loki. The only cross-scan
 state is the event-once dedup set (run ID → creation time, bounded to the
@@ -201,23 +202,20 @@ clamped), so misconfiguration degrades safely rather than crashing.
 
 ### Run modes
 
-github-scout matches the fleet's scheduled-app convention. You choose an
-internal timer or an external scheduler:
+You choose an internal timer or an external scheduler:
 
 - **Scheduled** (`SCAN_INTERVAL=15m`, the default): an internal jittered timer
   drives the scans. Failed runs are deduplicated in memory and emitted once.
 - **Resident-idle** (`SCAN_INTERVAL=off`): no internal timer. The container
   sits healthy and idle while an external scheduler runs `github-scout trigger`
-  on its own cadence, e.g. an Ofelia `job-exec`, like the rest of the fleet.
+  on its own cadence, e.g. an Ofelia `job-exec`.
 - **Trigger** (`github-scout trigger`): one scan, then exit 0/1; the target
   for that external scheduler, or a manual one-shot run.
 
-Each `trigger` is an independent process, but the run dedup set is persisted to
-`/tmp/seen-runs.json` (shared across `docker exec` triggers of the same running
-container), so a trigger reloads the previous one's set and emits each completed
-run exactly once, with no re-emission across triggers. A container recreate clears
-`/tmp` and at worst re-logs the lookback window once. The snapshot signals
-(PRs / issues / alerts) re-emit the full open set every scan by design.
+Each `trigger` is an independent process, but the run dedup set persists across
+triggers so each completed run is emitted exactly once (see _State_ above for the
+`/tmp/seen-runs.json` details and the container-recreate caveat). The snapshot
+signals (PRs / issues / alerts) re-emit the full open set every scan by design.
 
 Two optional noise filters take raw GitHub search qualifiers, appended to the
 cross-repo PR/issue searches:
@@ -236,14 +234,14 @@ github-scout writes JSON to stdout, one line per item. A failed run looks like:
   "time": "2026-06-21T12:00:03Z",
   "level": "INFO",
   "msg": "workflow run",
-  "repo": "cplieger/vibekit",
+  "repo": "owner/example",
   "workflow": "CI",
   "conclusion": "failure",
   "branch": "main",
   "event": "push",
   "run_number": 1060,
   "run_id": 12345678,
-  "url": "https://github.com/cplieger/vibekit/actions/runs/12345678",
+  "url": "https://github.com/owner/example/actions/runs/12345678",
   "created_at": "2026-06-19T08:07:35Z"
 }
 ```
@@ -279,19 +277,13 @@ counted as `degraded` (it reddens the dashboard tile) but is NOT paged; to stop
 an always-403 private repo from reddening every scan, list it in
 `CODE_SCANNING_EXCLUDE_REPOS`, which skips just its code-scanning read while
 keeping its other signals. A SYSTEMIC failure escalates to a distinct
-`error`-level `scan degraded` line carrying a machine `cause`, a human `reason`,
-and `failed_signals`: `token_invalid` when a 401 rejected the token AND no
-signal could be read this scan — a genuinely dead or blocked token (a single
-transient 401 alongside a successful read is a secondary-rate-limit blip,
-reported as `degraded` but not escalated, since GitHub returns intermittent 401s
-under burst even on a valid token); `rate_limited` (429); `no_repos_visible`
-when discovery succeeds but returns zero repositories (a token that lost repo
-visibility, so nothing was scanned); `code_scanning_blind` / `runs_blind` when a
-per-repo signal could not be read for ANY repo that has it (e.g. a missing token
-scope — a repo that simply lacks code scanning, or one listed in
-`CODE_SCANNING_EXCLUDE_REPOS`, is excluded, so it never masks a real blackout);
-or `signal_blind` when a cross-repo search (PRs or issues) fails. That is what an
-alert fires on, instead of the failure hiding behind a quiet all-zero scan.
+`error`-level `scan degraded` line carrying a machine `cause`, a human
+`reason`, and `failed_signals`, so an alert
+fires on a scan that went blind instead of the failure hiding behind a quiet
+all-zero scan. The causes cover a rejected token, a rate limit, a token that can
+no longer see any repos, and a signal that could not be read across every repo
+that has it. See [CONTRIBUTING.md](CONTRIBUTING.md#systemic-failure-causes) for
+the full `cause` enum and the exact escalation rules.
 
 ## Grafana integration
 
@@ -331,8 +323,8 @@ Every panel is built on a single Loki selector, for example:
 
 Tables render the `url` field as a click-through link. Because the events are
 plain logs, you can also write a Loki ruler alert
-(`count_over_time(... [1h]) > 0`) to be notified the moment anything breaks. The
-homelab deployment ships two: one fires on the `scan degraded` line (a scan that
+(`count_over_time(... [1h]) > 0`) to be notified the moment anything breaks. You
+can ship two Loki ruler alerts: one fires on the `scan degraded` line (a scan that
 ran but went blind — a pervasively rejected token, a signal dark across every
 repo, or a rate limit), and a liveness
 rule fires when no `scan complete` line appears for 40m (a wedged container or a
@@ -459,12 +451,9 @@ signal types.
 
 ## Disclaimer
 
-These images are built with care and follow security best practices, but they
-are intended for **homelab use**. No guarantees of fitness for production
-environments. Use at your own risk.
+This project is built with care and follows security best practices, but it is intended for personal / self-hosted use. No guarantees of fitness for production environments. Use at your own risk.
 
-This project was built with AI-assisted tooling. The human maintainer defines
-architecture, supervises implementation, and makes all final decisions.
+This project was built with AI-assisted tooling using [Claude Opus](https://www.anthropic.com/claude) and [Kiro](https://kiro.dev). The human maintainer defines architecture, supervises implementation, and makes all final decisions.
 
 ## License
 

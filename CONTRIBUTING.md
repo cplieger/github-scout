@@ -5,7 +5,7 @@ repo. The org-wide `cplieger` defaults still apply; this file adds the
 code-grounded detail you need to land a change without tripping over the
 load-bearing patterns.
 
-> This repository is **homelab-grade** software (see the disclaimer in the
+> This is a small, single-purpose self-hosted tool (see the disclaimer in the
 > README). Contributions are welcome, but the maintainer optimises for a small,
 > auditable, single-purpose tool over breadth of features. Please open an issue
 > to discuss anything larger than a bug fix before writing code.
@@ -65,6 +65,32 @@ Dependencies flow one direction: concrete packages depend on `model` /
 `urlsafe`, `collect` depends on its own `apiClient` interface, and `main.go` is
 the only place that wires the concrete client into the collector.
 
+## Systemic-failure causes
+
+A scan that runs but goes blind escalates to a distinct `error`-level
+`msg="scan degraded"` line carrying a machine `cause`, a human `reason`, and
+`failed_signals`. The `cause` enum:
+
+- `token_invalid`: a 401 rejected the token **and** no signal could be read this
+  scan (a genuinely dead or blocked token). A single transient 401 alongside a
+  successful read is treated as a secondary-rate-limit blip, reported as
+  `degraded` but not escalated, since GitHub returns intermittent 401s under
+  burst even on a valid token.
+- `rate_limited`: a 429 response.
+- `no_repos_visible`: discovery succeeded but returned zero repositories (a token
+  that lost repo visibility, so nothing was scanned).
+- `code_scanning_blind` / `runs_blind`: a per-repo signal could not be read for
+  any repo that has it (e.g. a missing token scope). A repo that simply lacks
+  code scanning, or one listed in `CODE_SCANNING_EXCLUDE_REPOS`, is excluded, so
+  it never masks a real blackout.
+- `signal_blind`: a cross-repo search (PRs or issues) failed.
+
+A per-repo failure (an incidental error, or one private repo without GitHub
+Advanced Security returning 403 on code scanning) is `degraded`-only, never
+escalated. The dashboard's Scan Integrity tile and the `GithubScoutScanDegraded`
+Loki ruler alert key on the `scan degraded` line, so a couldn't-check `0` is
+never read as a confirmed-clean `0`.
+
 ## Development environment
 
 You need Go; the exact version is pinned in [`go.mod`](go.mod). No other
@@ -76,7 +102,7 @@ cd github-scout
 go build ./...
 ```
 
-The lint and scan tooling is shared across the `cplieger` fleet and pinned by
+The lint and scan tooling is shared across the `cplieger` repos and pinned by
 [`cplieger/ci`](https://github.com/cplieger/ci). To install the exact versions
 CI uses (golangci-lint, gitleaks, govulncheck, fieldalignment, …) so your local
 results match the gate, run that repo's `scripts/install-local-tools.sh`.
