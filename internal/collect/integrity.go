@@ -67,9 +67,9 @@ const (
 )
 
 // classify maps a collection error to an outcome and, for a real failure,
-// records whether it is a systemic (fleet-wide) credential or rate-limit
+// records whether it is a systemic (org-wide) credential or rate-limit
 // problem. The github client (the adapter) has already translated the
-// fleet-wide HTTP statuses into domain sentinels — 401 to model.ErrTokenInvalid,
+// org-wide HTTP statuses into domain sentinels — 401 to model.ErrTokenInvalid,
 // 429 to model.ErrRateLimited — so this classifies on meaning and never sees an
 // HTTP transport type. A 403 is deliberately NOT systemic: the client leaves it
 // as a plain error, so on code scanning (where it usually means one private
@@ -84,7 +84,7 @@ func (sc *scanIntegrity) classify(err error) outcome {
 	case errors.Is(err, model.ErrNoCodeScanning):
 		return outcomeNoData
 	}
-	// A real read failure: flag the fleet-wide credential / quota classes.
+	// A real read failure: flag the org-wide credential / quota classes.
 	switch {
 	case errors.Is(err, model.ErrTokenInvalid):
 		sc.tokenRejected = true
@@ -177,7 +177,7 @@ func (sc *scanIntegrity) failedSignals() string {
 
 // runsBlind / codeScanningBlind report a per-repo signal that could not be read
 // from ANY repo that has it (every attempt failed, none succeeded) — the
-// fleet-wide blackout worth paging on, as opposed to an incidental single-repo
+// org-wide blackout worth paging on, as opposed to an incidental single-repo
 // failure.
 func (sc *scanIntegrity) runsBlind() bool         { return sc.runsFailed > 0 && sc.runsOK == 0 }
 func (sc *scanIntegrity) codeScanningBlind() bool { return sc.csFailed > 0 && sc.csOK == 0 }

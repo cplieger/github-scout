@@ -385,10 +385,10 @@ func TestExcludeReposCaseInsensitive(t *testing.T) {
 // trailing empty entry confirm the shared parseExcludes normalization.
 func TestLoadParsesCodeScanningExcludes(t *testing.T) {
 	t.Setenv("EXCLUDE_REPOS", "")
-	t.Setenv("CODE_SCANNING_EXCLUDE_REPOS", ".kiro, Homelab ,")
+	t.Setenv("CODE_SCANNING_EXCLUDE_REPOS", ".config, MyRepo ,")
 	cfg := Load()
-	if !cfg.CodeScanningExcludeRepos[".kiro"] || !cfg.CodeScanningExcludeRepos["homelab"] {
-		t.Errorf("CodeScanningExcludeRepos = %v, want .kiro+homelab (lowercased)", cfg.CodeScanningExcludeRepos)
+	if !cfg.CodeScanningExcludeRepos[".config"] || !cfg.CodeScanningExcludeRepos["myrepo"] {
+		t.Errorf("CodeScanningExcludeRepos = %v, want .config+myrepo (lowercased)", cfg.CodeScanningExcludeRepos)
 	}
 	if cfg.CodeScanningExcludeRepos[""] {
 		t.Errorf("empty exclude entry should be dropped")

@@ -46,7 +46,7 @@ var ErrNoCodeScanning = errors.New("repo has no code-scanning analyses")
 // imports the HTTP transport's error types. A 403 is deliberately NOT mapped
 // here: on code scanning it usually means one private repo lacks GitHub
 // Advanced Security, so it is a per-repo failure that escalates only via the
-// "blind for every repo" path, not a fleet-wide one.
+// "blind for every repo" path, not an org-wide one.
 var (
 	ErrTokenInvalid = errors.New("github token rejected (401)")
 	ErrRateLimited  = errors.New("github rate limit exceeded (429)")

@@ -135,7 +135,7 @@ func New(d *Deps) *Collector {
 // is a security false-negative — so "scan complete" carries `errors`,
 // `degraded`, and `failed_signals`, and a SYSTEMIC failure (a rejected token or
 // rate limit, or a signal blind across every repo) is escalated to a distinct
-// ERROR-level "scan degraded" line that the fleet error panel and the Loki
+// ERROR-level "scan degraded" line that the shared error panel and the Loki
 // ruler alert key on.
 func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 	start := c.now()
@@ -151,7 +151,7 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 			// SIGTERM (or a deadline) landed during discovery: a clean shutdown,
 			// not a token failure. Mirror the per-signal collectors, which treat
 			// cancellation as outcomeShutdown — don't log an ERROR "repo discovery
-			// failed" (which reads like a dead token and bumps the fleet error
+			// failed" (which reads like a dead token and bumps the shared error
 			// panel) and don't flip health, since a restart has nothing to fix.
 			c.logger.Debug("scan interrupted", "phase", "repo discovery")
 			return true

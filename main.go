@@ -10,7 +10,7 @@
 // github.Client -> collect.Collector -> health.Marker. All logic lives in
 // internal/*; this file holds no business rules.
 //
-// Three run modes (matching the fleet's scheduled-app convention):
+// Three run modes (matching the shared scheduled-app convention):
 //   - scheduled    (SCAN_INTERVAL > 0): an internal jittered timer.
 //   - resident-idle (SCAN_INTERVAL = off): no internal timer; sits healthy
 //     and idle, awaiting external `github-scout trigger` execs (Ofelia).
@@ -236,11 +236,11 @@ func runScheduled(ctx context.Context, interval time.Duration, collector *collec
 }
 
 // logLevel backs the JSON handler installed at the start of main(). The JSON
-// handler (not the fleet-default text handler) is deliberate: the product IS
+// handler (not the shared default text handler) is deliberate: the product IS
 // structured events rendered as Grafana table columns, and workflow names /
 // branches contain spaces and slashes that JSON encodes unambiguously where
-// logfmt quoting is fragile (the homelab error-matching regex covers JSON, so
-// github-scout's own error logs are still caught by the cross-fleet panels).
+// logfmt quoting is fragile (the shared error-matching regex covers JSON, so
+// github-scout's own error logs are still caught by the shared error panels).
 // Installing it at the start of main() — before config.Load runs — means even
 // config-validation warnings emit as JSON on stdout, not text on stderr.
 var logLevel = new(slog.LevelVar)
