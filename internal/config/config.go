@@ -13,6 +13,7 @@
 package config
 
 import (
+	"cmp"
 	"log/slog"
 	"os"
 	"strconv"
@@ -139,10 +140,7 @@ func parseScanInterval(raw string) time.Duration {
 // Note: to intentionally disable an exclusion filter, set it to a no-op
 // qualifier rather than empty (empty falls back to the default).
 func getEnv(key, fallback string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return fallback
+	return cmp.Or(os.Getenv(key), fallback)
 }
 
 // Valid reports whether the config has the minimum needed to run: an owner
@@ -199,16 +197,13 @@ func clampedInt(key string, def, lo, hi int) int {
 	return clamped
 }
 
-// parseLogLevel converts LOG_LEVEL to slog.Level (default Info).
+// parseLogLevel converts LOG_LEVEL to slog.Level. It delegates to
+// slog.Level.UnmarshalText (case-insensitive; also accepts offset syntax such
+// as "warn-4"), falling back to Info for an empty or unrecognized value.
 func parseLogLevel(s string) slog.Level {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
-	default:
+	var lvl slog.Level
+	if err := lvl.UnmarshalText([]byte(strings.TrimSpace(s))); err != nil {
 		return slog.LevelInfo
 	}
+	return lvl
 }
