@@ -6,8 +6,7 @@ services:
     restart: unless-stopped
 
     environment:
-      TZ: "Europe/Paris"
       # Required. Keep the token in a .env file beside this compose; see the README for token scopes.
       GITHUB_OWNER: "${GITHUB_OWNER:?set GITHUB_OWNER - the login whose repos to scan}"
-      GITHUB_TOKEN: "${GITHUB_TOKEN:?set GITHUB_TOKEN - needs repo + Actions + code-scanning read}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:?set GITHUB_TOKEN - see README for token scopes}"
       SCAN_INTERVAL: "15m"  # Go duration between scans; "off" = resident-idle (external trigger)

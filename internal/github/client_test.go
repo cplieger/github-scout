@@ -227,6 +227,9 @@ func TestSearchOpenPRsCrossRepo(t *testing.T) {
 		if !strings.Contains(q, "-author:app/renovate") {
 			t.Errorf("PR query missing exclude: %q", q)
 		}
+		if !strings.Contains(q, "archived:false") {
+			t.Errorf("PR query missing archived:false qualifier (archived repos must be excluded): %q", q)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"items":[
 			{"number":7,"title":"feat: x","html_url":"https://github.com/cplieger/a/pull/7","draft":false,"created_at":"2026-06-20T10:00:00Z","user":{"login":"cplieger"},"repository_url":"https://api.github.com/repos/cplieger/a"},
@@ -255,6 +258,9 @@ func TestSearchOpenIssuesJoinsLabels(t *testing.T) {
 		q := r.URL.Query().Get("q")
 		if !strings.Contains(q, "is:open is:issue") {
 			t.Errorf("issue query missing qualifier: %q", q)
+		}
+		if !strings.Contains(q, "archived:false") {
+			t.Errorf("issue query missing archived:false qualifier (archived repos must be excluded): %q", q)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"items":[
@@ -692,5 +698,55 @@ func TestGetJSON_routes_retry_logs_to_client_logger(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "will retry") {
 		t.Errorf("client logger did not capture httpx retry log (WithLogger not wired?); log=%q", buf.String())
+	}
+}
+
+// TestListCodeScanningAlertsRuleDescriptionFallback pins the cmp.Or fallback in
+// ListCodeScanningAlerts: when an alert's rule.id is empty (some tools populate
+// only rule.description), Rule falls back to the description rather than
+// emitting an empty rule name. Every other code-scanning test sets rule.id, so
+// a mutant dropping the cmp.Or fallback to a bare a.Rule.ID survives; this
+// exercises the empty-id branch.
+func TestListCodeScanningAlertsRuleDescriptionFallback(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"number":5,"created_at":"2026-06-20T10:00:00Z","html_url":"https://github.com/cplieger/a/security/code-scanning/5","rule":{"id":"","description":"Hard-coded credentials","security_severity_level":"high"},"tool":{"name":"CodeQL"}}
+		]`))
+	}))
+	defer srv.Close()
+
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	if err != nil {
+		t.Fatalf("ListCodeScanningAlerts: %v", err)
+	}
+	if len(alerts) != 1 {
+		t.Fatalf("got %d alerts, want 1", len(alerts))
+	}
+	if alerts[0].Rule != "Hard-coded credentials" {
+		t.Errorf("Rule = %q, want the rule.description fallback (rule.id was empty)", alerts[0].Rule)
+	}
+}
+
+// TestListReposOwnerMatchIsCaseInsensitive pins the strings.EqualFold owner
+// match in ListRepos: GitHub's API can return the owner login in a different
+// case than the configured GITHUB_OWNER, so a mixed-case configured owner must
+// still keep a lowercased API login. Every other ListRepos test uses matching
+// lowercase, so a mutant swapping EqualFold for == survives; this exercises the
+// case-mismatch path (mirroring the collector's TestKeepIsCaseInsensitiveOnOwner
+// contract at the client layer).
+func TestListReposOwnerMatchIsCaseInsensitive(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"name":"keep","owner":{"login":"cplieger"},"private":false,"archived":false}]`))
+	}))
+	defer srv.Close()
+
+	repos, err := newTestClient(t, srv).ListRepos(context.Background(), "Cplieger")
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if len(repos) != 1 {
+		t.Fatalf("got %d repos, want 1 (a mixed-case configured owner must match a lowercased API login)", len(repos))
 	}
 }

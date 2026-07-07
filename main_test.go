@@ -4,11 +4,13 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/cplieger/github-scout/internal/collect"
 	"github.com/cplieger/github-scout/internal/model"
+	"github.com/cplieger/health"
 	"pgregory.net/rapid"
 )
 
@@ -103,4 +105,62 @@ func TestJitteredDelay_appliesJitter(t *testing.T) {
 	if len(seen) < 2 {
 		t.Errorf("jitteredDelay(%v) produced %d distinct value(s) over 1000 draws, want >= 2", interval, len(seen))
 	}
+}
+
+func TestRunScheduled_firstScanRunsImmediatelyAndSetsMarker(t *testing.T) {
+	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+	marker.Set(false)
+	collector := collect.New(&collect.Deps{
+		Client: healthyClient{},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Owner:  "cplieger",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runScheduled(ctx, time.Hour, collector, marker)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for !marker.Healthy() {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("runScheduled first scan did not run within 2s; the first iteration must fire at delay 0, not after a full interval")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runScheduled did not return after context cancellation")
+	}
+}
+
+func TestRunScheduled_failedScanMarksUnhealthy(t *testing.T) {
+	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
+	marker.Set(true)
+	collector := collect.New(&collect.Deps{
+		Client: panicClient{},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Owner:  "cplieger",
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runScheduled(ctx, time.Hour, collector, marker)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for marker.Healthy() {
+		if time.Now().After(deadline) {
+			cancel()
+			<-done
+			t.Fatal("runScheduled did not flip the marker to unhealthy after a failing first scan")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
 }

@@ -139,10 +139,8 @@ services:
     image: ghcr.io/cplieger/github-scout:latest
     container_name: github-scout
     restart: unless-stopped
-    user: "1000:1000"
 
     environment:
-      TZ: "Europe/Paris"
       GITHUB_OWNER: "your-login"        # user or org whose repos to scan
       GITHUB_TOKEN: "ghp_xxx"            # see token scopes below
       SCAN_INTERVAL: "15m"               # Go duration between scans; "off" = resident-idle
@@ -194,7 +192,6 @@ is logged at startup).
 | `EXCLUDE_REPOS`               | Comma-separated **bare** repo names to skip (silences all signals)           | ``             | No       |
 | `CODE_SCANNING_EXCLUDE_REPOS` | Comma-separated bare repo names to skip for code scanning only (others kept) | ``             | No       |
 | `LOG_LEVEL`                   | `debug`, `info`, `warn`, `error`                                             | `info`         | No       |
-| `TZ`                          | Container timezone                                                           | `Europe/Paris` | No       |
 
 Out-of-range or unparseable values fall back to the default (a bad
 `SCAN_INTERVAL` keeps scanning at 15m; an out-of-range `LOOKBACK_HOURS` is
@@ -337,8 +334,11 @@ A marker file at `/tmp/.healthy` is written after each scan whose repo discovery
 succeeded, and cleared otherwise. The `health` subcommand
 (`/github-scout health`) checks the marker and exits non-zero when unhealthy;
 this is the container's `HEALTHCHECK`, so no HTTP port or shell is needed on the
-distroless image. In scheduled mode the container starts unhealthy and flips
-healthy after the first successful scan. In resident-idle mode
+distroless image. In scheduled mode the container starts healthy on boot; the
+first scan runs in the background (as the scheduler loop's first iteration), so a
+slow first scan on a large account cannot hold the container unhealthy past the
+`HEALTHCHECK` start-period, and the marker thereafter reflects each completed
+scan's repo-discovery outcome. In resident-idle mode
 (`SCAN_INTERVAL=off`) it reports healthy as soon as it is up and idle
 (liveness); each external `trigger` exec then updates the marker to reflect that
 scan's outcome. Per-repo run-list failures are tolerated (logged; the

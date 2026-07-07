@@ -109,13 +109,14 @@ func Load() Config {
 // default; an invalid or negative value warns and falls back to the default
 // so a typo degrades to "still scanning" rather than silent idle.
 func parseScanInterval(raw string) time.Duration {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
+	trimmed := strings.TrimSpace(raw)
+	switch strings.ToLower(trimmed) {
 	case "":
 		return DefaultScanInterval
 	case "off", "disabled", "0", "0s":
 		return 0
 	}
-	d, err := time.ParseDuration(strings.TrimSpace(raw))
+	d, err := time.ParseDuration(trimmed)
 	switch {
 	case err != nil:
 		slog.Warn("invalid SCAN_INTERVAL, using default", "value", raw, "default", DefaultScanInterval, "error", err)
@@ -156,7 +157,7 @@ func (c *Config) Valid() bool {
 // Entries are trimmed and lowercased; empties are dropped. Matching is
 // case-insensitive — the collect-side lookup keys are lowercased to match —
 // mirroring keep()'s case-insensitive owner test (GitHub repo names are
-// themselves case-insensitive). Unsafe names are kept (they only ever
+// themselves case-insensitive). Unsafe names are kept (they are only ever
 // compared, never used to build a URL) but trimmed.
 func parseExcludes(s string) map[string]bool {
 	out := make(map[string]bool)

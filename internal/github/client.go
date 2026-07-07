@@ -325,7 +325,12 @@ func (c *Client) search(ctx context.Context, base, owner, exclude string) ([]api
 	if !urlsafe.IsSafeURLSegment(owner) {
 		return nil, fmt.Errorf("unsafe owner segment: %q", owner)
 	}
-	q := base + " user:" + owner
+	// archived:false excludes archived repos from the cross-repo Search API,
+	// which (unlike ListRepos) includes them by default. This aligns the
+	// snapshot path with the repo-loop path (ListRepos filters r.Archived) and
+	// with model.Repo's contract that archived repos are skipped: an archived
+	// repo's open PRs/issues are not actionable.
+	q := base + " user:" + owner + " archived:false"
 	if exclude = strings.TrimSpace(exclude); exclude != "" {
 		q += " " + exclude
 	}
