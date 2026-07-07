@@ -425,14 +425,14 @@ All dependencies are updated automatically via
 [Renovate](https://github.com/renovatebot/renovate) and pinned by digest or
 version for reproducibility.
 
-| Dependency         | Source                                                            |
-| ------------------ | ----------------------------------------------------------------- |
-| golang             | [Go](https://hub.docker.com/_/golang)                             |
-| Distroless static  | [Distroless](https://github.com/GoogleContainerTools/distroless)  |
-| cplieger/httpx     | [httpx](https://github.com/cplieger/httpx), retry/backoff client  |
-| cplieger/health    | [health](https://github.com/cplieger/health), file-marker probe   |
+| Dependency          | Source                                                                         |
+| ------------------- | ------------------------------------------------------------------------------ |
+| golang              | [Go](https://hub.docker.com/_/golang)                                          |
+| Distroless static   | [Distroless](https://github.com/GoogleContainerTools/distroless)               |
+| cplieger/httpx      | [httpx](https://github.com/cplieger/httpx), retry/backoff client               |
+| cplieger/health     | [health](https://github.com/cplieger/health), file-marker probe                |
 | cplieger/atomicfile | [atomicfile](https://github.com/cplieger/atomicfile), atomic state-file writes |
-| pgregory.net/rapid | [rapid](https://pkg.go.dev/pgregory.net/rapid), tests only        |
+| pgregory.net/rapid  | [rapid](https://pkg.go.dev/pgregory.net/rapid), tests only                     |
 
 ## Credits
 
