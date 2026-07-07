@@ -15,16 +15,18 @@
 //     stops appearing in later snapshots, so the dashboard reads the most
 //     recent scan as "what is open right now" — no dedup state needed.
 //
-// The only cross-scan state is the run dedup set. In the long-lived
-// scheduled/resident process it lives in memory across scans. Under an
-// external scheduler (Ofelia job-exec) each `trigger` is a fresh process,
-// so the set is persisted to a small JSON file (Deps.StatePath, e.g.
-// /tmp/seen-runs.json, which is shared across `docker exec` triggers of the
-// same running container) and reloaded at the start of the next trigger.
-// Either way a cold start — the first run, or a container recreate that
-// clears /tmp — at worst re-emits runs still inside the lookback window
-// (the dashboard dedups run counts by run_id), so persistence is a
-// best-effort optimization, never a correctness dependency.
+// The only cross-scan state is the run dedup set. Production (main.go) sets
+// Deps.StatePath wherever a scan runs -- the scheduled daemon and every
+// `trigger` exec (in resident-idle mode the resident daemon never scans, so
+// only the trigger execs persist) -- so the set is persisted to a small JSON
+// file (e.g. /tmp/seen-runs.json,
+// shared across `docker exec` triggers of the same running container) at the
+// end of each scan and reloaded at the next process start; a plain restart or
+// a fresh `trigger` then re-emits nothing. Leaving Deps.StatePath empty keeps
+// the set in memory only (used in tests). Either way a cold start — the first
+// run, or a container recreate that clears /tmp — at worst re-emits runs still
+// inside the lookback window (the dashboard dedups run counts by run_id), so
+// persistence is a best-effort optimization, never a correctness dependency.
 package collect
 
 import (
@@ -86,8 +88,12 @@ type Deps struct {
 	// (atomic JSON) at the end of each scan and reloaded by New. Set it for
 	// trigger-mode deployments (each trigger is a fresh process) to a path
 	// shared across execs of the same container, e.g. /tmp/seen-runs.json.
-	// Leave empty for the long-lived scheduled/resident process (in-memory
-	// dedup) and in tests.
+	// Production (main.go) sets it wherever a scan runs -- the scheduled
+	// daemon and every `trigger` exec (in resident-idle mode the resident
+	// daemon never scans, so only the trigger execs persist). The dedup set
+	// therefore survives a plain restart and each completed run is emitted
+	// once regardless of process lifetime.
+	// Leave empty only for in-memory-only dedup (used in tests).
 	StatePath string
 	Lookback  time.Duration
 }
@@ -147,7 +153,7 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 
 	repos, err := c.client.ListRepos(ctx, c.owner)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if isShutdown(err) {
 			// SIGTERM (or a deadline) landed during discovery: a clean shutdown,
 			// not a token failure. Mirror the per-signal collectors, which treat
 			// cancellation as outcomeShutdown — don't log an ERROR "repo discovery
@@ -159,7 +165,7 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 		c.logger.Error("repo discovery failed", "owner", c.owner, "error", err)
 		return false
 	}
-	c.logger.Info("scanning", "owner", c.owner, "repos", len(repos), "since", cutoff.Format(time.RFC3339))
+	c.logger.Info("scanning", "owner", c.owner, "repos", len(repos), "since", cutoff.UTC().Format(time.RFC3339))
 
 	var ig scanIntegrity
 	ig.recordDiscovery(len(repos))
@@ -221,7 +227,7 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 func (c *Collector) collectPRs(ctx context.Context) (int, error) {
 	prs, err := c.client.SearchOpenPRs(ctx, c.owner, c.prExclude)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if isShutdown(err) {
 			c.logger.Debug("scan interrupted", "search", "open pull requests")
 		} else {
 			c.logger.Warn("open PR search failed", "error", err)
@@ -248,7 +254,7 @@ func (c *Collector) collectPRs(ctx context.Context) (int, error) {
 func (c *Collector) collectIssues(ctx context.Context) (int, error) {
 	issues, err := c.client.SearchOpenIssues(ctx, c.owner, c.issueExclude)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if isShutdown(err) {
 			c.logger.Debug("scan interrupted", "search", "open issues")
 		} else {
 			c.logger.Warn("open issue search failed", "error", err)
@@ -280,7 +286,7 @@ func (c *Collector) collectIssues(ctx context.Context) (int, error) {
 func (c *Collector) collectRuns(ctx context.Context, repo *model.Repo, cutoff time.Time) (newRuns, newFailures int, err error) {
 	runs, err := c.client.ListRuns(ctx, *repo, cutoff)
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		if isShutdown(err) {
 			c.logger.Debug("scan interrupted", "repo", repo.FullName())
 		} else {
 			c.logger.Warn("partial failure listing runs", "repo", repo.FullName(), "error", err)
@@ -320,7 +326,7 @@ func (c *Collector) collectAlerts(ctx context.Context, repo *model.Repo) (int, e
 		case errors.Is(err, model.ErrNoCodeScanning):
 			// Benign: this repo has no code scanning. Not a failure and not a
 			// readable signal — Scan's integrity verdict ignores it.
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		case isShutdown(err):
 			c.logger.Debug("scan interrupted", "repo", repo.FullName())
 		default:
 			c.logger.Warn("code scanning listing failed", "repo", repo.FullName(), "error", err)
@@ -364,6 +370,14 @@ func (c *Collector) excludedRepo(fullName string) bool {
 // single place the read-side normalization lives.
 func (c *Collector) excludedName(name string) bool {
 	return c.exclude[strings.ToLower(name)]
+}
+
+// isShutdown reports whether err is a context cancellation or deadline: a
+// graceful shutdown (SIGTERM) rather than a data/read failure. Every
+// per-signal collector and the integrity classifier treat this class the
+// same way (Debug log, no degradation), so the invariant lives in one place.
+func isShutdown(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // codeScanningExcluded reports whether a repo's code-scanning signal should be

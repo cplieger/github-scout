@@ -96,12 +96,13 @@ The four signals split into two shapes:
 
 github-scout keeps **no database**; history lives in Loki. The only cross-scan
 state is the event-once dedup set (run ID → creation time, bounded to the
-lookback window). In the long-lived scheduled/resident process it lives in
-memory; under an external scheduler each `trigger` is a fresh process, so the
-set is persisted to a small JSON file at `/tmp/seen-runs.json` and reloaded on
-the next trigger. Because `/tmp` is shared across `docker exec` triggers of the
-same running container, a run is emitted once and not re-emitted on the
-following trigger. A cold start (the first run, or a container **recreate**
+lookback window). It lives in memory during a run and is persisted (as an
+atomic JSON write) to a small file at `/tmp/seen-runs.json` at the end of each
+scan, then reloaded at process start, so a plain restart re-emits nothing. The
+scheduled daemon persists after every scan; under an external scheduler each
+`trigger` is a fresh process that reloads the previous one's set from the same
+file (`/tmp` is shared across `docker exec` triggers). In resident-idle mode the
+daemon itself never scans, so only its `trigger` execs persist. A cold start (the first run, or a container **recreate**
 that clears `/tmp`) at worst re-logs runs still inside the lookback window; the
 dashboard also dedups run counts by run ID, so counts stay correct either way.
 Persistence is a best-effort optimisation, never a correctness dependency.
@@ -139,10 +140,8 @@ services:
     image: ghcr.io/cplieger/github-scout:latest
     container_name: github-scout
     restart: unless-stopped
-    user: "1000:1000"
 
     environment:
-      TZ: "Europe/Paris"
       GITHUB_OWNER: "your-login"        # user or org whose repos to scan
       GITHUB_TOKEN: "ghp_xxx"            # see token scopes below
       SCAN_INTERVAL: "15m"               # Go duration between scans; "off" = resident-idle
@@ -194,7 +193,6 @@ is logged at startup).
 | `EXCLUDE_REPOS`               | Comma-separated **bare** repo names to skip (silences all signals)           | ``             | No       |
 | `CODE_SCANNING_EXCLUDE_REPOS` | Comma-separated bare repo names to skip for code scanning only (others kept) | ``             | No       |
 | `LOG_LEVEL`                   | `debug`, `info`, `warn`, `error`                                             | `info`         | No       |
-| `TZ`                          | Container timezone                                                           | `Europe/Paris` | No       |
 
 Out-of-range or unparseable values fall back to the default (a bad
 `SCAN_INTERVAL` keeps scanning at 15m; an out-of-range `LOOKBACK_HOURS` is
@@ -337,8 +335,11 @@ A marker file at `/tmp/.healthy` is written after each scan whose repo discovery
 succeeded, and cleared otherwise. The `health` subcommand
 (`/github-scout health`) checks the marker and exits non-zero when unhealthy;
 this is the container's `HEALTHCHECK`, so no HTTP port or shell is needed on the
-distroless image. In scheduled mode the container starts unhealthy and flips
-healthy after the first successful scan. In resident-idle mode
+distroless image. In scheduled mode the container starts healthy on boot; the
+first scan runs in the background (as the scheduler loop's first iteration), so a
+slow first scan on a large account cannot hold the container unhealthy past the
+`HEALTHCHECK` start-period, and the marker thereafter reflects each completed
+scan's repo-discovery outcome. In resident-idle mode
 (`SCAN_INTERVAL=off`) it reports healthy as soon as it is up and idle
 (liveness); each external `trigger` exec then updates the marker to reflect that
 scan's outcome. Per-repo run-list failures are tolerated (logged; the
@@ -424,13 +425,14 @@ All dependencies are updated automatically via
 [Renovate](https://github.com/renovatebot/renovate) and pinned by digest or
 version for reproducibility.
 
-| Dependency         | Source                                                            |
-| ------------------ | ----------------------------------------------------------------- |
-| golang             | [Go](https://hub.docker.com/_/golang)                             |
-| Distroless static  | [Distroless](https://github.com/GoogleContainerTools/distroless)  |
-| cplieger/httpx     | [httpx](https://github.com/cplieger/httpx), retry/backoff client  |
-| cplieger/health    | [health](https://github.com/cplieger/health), file-marker probe   |
-| pgregory.net/rapid | [rapid](https://pkg.go.dev/pgregory.net/rapid), tests only        |
+| Dependency          | Source                                                                         |
+| ------------------- | ------------------------------------------------------------------------------ |
+| golang              | [Go](https://hub.docker.com/_/golang)                                          |
+| Distroless static   | [Distroless](https://github.com/GoogleContainerTools/distroless)               |
+| cplieger/httpx      | [httpx](https://github.com/cplieger/httpx), retry/backoff client               |
+| cplieger/health     | [health](https://github.com/cplieger/health), file-marker probe                |
+| cplieger/atomicfile | [atomicfile](https://github.com/cplieger/atomicfile), atomic state-file writes |
+| pgregory.net/rapid  | [rapid](https://pkg.go.dev/pgregory.net/rapid), tests only                     |
 
 ## Credits
 

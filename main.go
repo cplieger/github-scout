@@ -31,12 +31,9 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
-	// Embed the IANA tz database so TZ (default Europe/Paris) is honored regardless
-	// of the base image's zoneinfo; without it, on a base that ships no
-	// /usr/share/zoneinfo, time.Local silently falls back to UTC.
-	_ "time/tzdata"
 
 	"github.com/cplieger/github-scout/internal/collect"
 	"github.com/cplieger/github-scout/internal/config"
@@ -51,9 +48,10 @@ import (
 // across `docker exec` triggers of the same running container, so each
 // trigger reloads the previous one's set and re-emits nothing. A container
 // recreate clears /tmp, which at worst re-emits the lookback window once
-// (the documented cold-start behaviour). In scheduled/resident mode the
-// long-lived process also persists here, so a plain restart no longer
-// re-emits either.
+// (the documented cold-start behaviour). In scheduled mode the long-lived
+// process also persists here after each scan, so a plain restart no longer
+// re-emits either; in resident-idle mode the resident process never scans,
+// so cross-trigger persistence there is entirely via the trigger execs.
 const seenStatePath = "/tmp/seen-runs.json"
 
 func main() {
@@ -61,7 +59,7 @@ func main() {
 	// warnings) so every line is JSON on stdout; setupLogging sets the level
 	// once config is read.
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout,
-		&slog.HandlerOptions{Level: logLevel})))
+		&slog.HandlerOptions{Level: logLevel, ReplaceAttr: utcTimeAttr})))
 
 	// CLI subcommands for the distroless image (no shell): `health` for the
 	// Docker healthcheck (checks the marker file), `trigger` for a one-shot
@@ -91,14 +89,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Clear any stale marker from a previous crash so the probe reports
-	// unhealthy until the first scan completes.
+	// Clear any stale marker from a previous crash; each run mode below sets
+	// its own boot health state (both modes report healthy on boot, so a slow
+	// first scan never gates startup health).
 	marker := health.NewMarker(health.DefaultPath)
 	marker.Set(false)
 	defer marker.Cleanup()
-
-	collector, httpClient := buildCollector(&cfg)
-	defer httpx.Close(httpClient)
 
 	if cfg.ScanInterval == 0 {
 		// Resident-idle: no internal timer. Scans are driven externally by
@@ -108,13 +104,19 @@ func main() {
 		slog.Info("resident-idle mode", "reason", "SCAN_INTERVAL=off, awaiting external trigger")
 		<-ctx.Done()
 	} else {
-		// First scan inline so the container reports healthy (or not) quickly.
-		marker.Set(runScan(ctx, collector))
+		// Scheduled: healthy on boot. The first scan runs as the scheduler
+		// loop's first iteration (immediately, not after a full interval), NOT
+		// inline here — so a slow first scan on a large account can't hold the
+		// container unhealthy past the healthcheck start-period. The marker
+		// thereafter reflects each completed scan's repo-discovery result.
+		collector, httpClient := buildCollector(&cfg)
+		defer httpx.Close(httpClient)
+		marker.Set(true)
 		slog.Info("scheduled mode", "interval", cfg.ScanInterval, "jitter", "±10%")
 		runScheduled(ctx, cfg.ScanInterval, collector, marker)
 	}
 
-	slog.Info("shutdown complete")
+	slog.Info("shutdown complete", "cause", context.Cause(ctx))
 }
 
 // runTrigger executes a single scan and exits — the target for external
@@ -202,7 +204,7 @@ func buildCollector(cfg *config.Config) (*collect.Collector, *http.Client) {
 func runScan(ctx context.Context, collector *collect.Collector) (healthy bool) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("scan panicked", "panic", r)
+			slog.Error("scan panicked", "panic", r, "stack", string(debug.Stack()))
 			healthy = false
 		}
 	}()
@@ -220,10 +222,14 @@ func jitteredDelay(interval time.Duration) time.Duration {
 
 // runScheduled scans on each tick of a ScanInterval timer with ±10% jitter
 // until ctx is cancelled. Jitter avoids a predictable, synchronized hammer
-// on the GitHub API across restarts.
+// on the GitHub API across restarts. The first iteration fires immediately
+// (zero delay) so the first scan runs promptly on boot; boot health is set
+// healthy by the caller, so this loop only ever updates the marker from a
+// completed scan's repo-discovery result and never gates startup health.
 func runScheduled(ctx context.Context, interval time.Duration, collector *collect.Collector, marker *health.Marker) {
+	delay := time.Duration(0)
 	for {
-		timer := time.NewTimer(jitteredDelay(interval))
+		timer := time.NewTimer(delay)
 
 		select {
 		case <-ctx.Done():
@@ -232,6 +238,7 @@ func runScheduled(ctx context.Context, interval time.Duration, collector *collec
 		case <-timer.C:
 			marker.Set(runScan(ctx, collector))
 		}
+		delay = jitteredDelay(interval)
 	}
 }
 
@@ -267,4 +274,16 @@ func logConfig(cfg *config.Config) {
 		"lookback", cfg.Lookback,
 		"excluded_repos", len(cfg.ExcludeRepos),
 		"code_scanning_excluded_repos", len(cfg.CodeScanningExcludeRepos))
+}
+
+// utcTimeAttr is a slog ReplaceAttr that renders the record's built-in time
+// key in UTC, so log-line timestamps are zone-stable regardless of the
+// container's TZ (the fleet logs-in-UTC standard). It rewrites only the
+// top-level time attribute; a user attribute that happens to share the "time"
+// key inside a group is left untouched.
+func utcTimeAttr(groups []string, a slog.Attr) slog.Attr {
+	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
+		a.Value = slog.TimeValue(a.Value.Time().UTC())
+	}
+	return a
 }

@@ -1,7 +1,6 @@
 package collect
 
 import (
-	"context"
 	"errors"
 	"log/slog"
 	"strings"
@@ -79,7 +78,7 @@ func (sc *scanIntegrity) classify(err error) outcome {
 	switch {
 	case err == nil:
 		return outcomeOK
-	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+	case isShutdown(err):
 		return outcomeShutdown
 	case errors.Is(err, model.ErrNoCodeScanning):
 		return outcomeNoData
