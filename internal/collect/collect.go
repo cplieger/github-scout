@@ -16,8 +16,10 @@
 //     recent scan as "what is open right now" — no dedup state needed.
 //
 // The only cross-scan state is the run dedup set. Production (main.go) sets
-// Deps.StatePath in every run mode -- scheduled, resident-idle, and trigger --
-// so the set is persisted to a small JSON file (e.g. /tmp/seen-runs.json,
+// Deps.StatePath wherever a scan runs -- the scheduled daemon and every
+// `trigger` exec (in resident-idle mode the resident daemon never scans, so
+// only the trigger execs persist) -- so the set is persisted to a small JSON
+// file (e.g. /tmp/seen-runs.json,
 // shared across `docker exec` triggers of the same running container) at the
 // end of each scan and reloaded at the next process start; a plain restart or
 // a fresh `trigger` then re-emits nothing. Leaving Deps.StatePath empty keeps
@@ -86,9 +88,11 @@ type Deps struct {
 	// (atomic JSON) at the end of each scan and reloaded by New. Set it for
 	// trigger-mode deployments (each trigger is a fresh process) to a path
 	// shared across execs of the same container, e.g. /tmp/seen-runs.json.
-	// Production (main.go) sets it in every run mode -- scheduled,
-	// resident-idle, and trigger -- so the dedup set survives a plain restart
-	// and each completed run is emitted once regardless of process lifetime.
+	// Production (main.go) sets it wherever a scan runs -- the scheduled
+	// daemon and every `trigger` exec (in resident-idle mode the resident
+	// daemon never scans, so only the trigger execs persist). The dedup set
+	// therefore survives a plain restart and each completed run is emitted
+	// once regardless of process lifetime.
 	// Leave empty only for in-memory-only dedup (used in tests).
 	StatePath string
 	Lookback  time.Duration

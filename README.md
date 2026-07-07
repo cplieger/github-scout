@@ -96,12 +96,13 @@ The four signals split into two shapes:
 
 github-scout keeps **no database**; history lives in Loki. The only cross-scan
 state is the event-once dedup set (run ID → creation time, bounded to the
-lookback window). In the long-lived scheduled/resident process it lives in
-memory; under an external scheduler each `trigger` is a fresh process, so the
-set is persisted to a small JSON file at `/tmp/seen-runs.json` and reloaded on
-the next trigger. Because `/tmp` is shared across `docker exec` triggers of the
-same running container, a run is emitted once and not re-emitted on the
-following trigger. A cold start (the first run, or a container **recreate**
+lookback window). It lives in memory during a run and is persisted (as an
+atomic JSON write) to a small file at `/tmp/seen-runs.json` at the end of each
+scan, then reloaded at process start, so a plain restart re-emits nothing. The
+scheduled daemon persists after every scan; under an external scheduler each
+`trigger` is a fresh process that reloads the previous one's set from the same
+file (`/tmp` is shared across `docker exec` triggers). In resident-idle mode the
+daemon itself never scans, so only its `trigger` execs persist. A cold start (the first run, or a container **recreate**
 that clears `/tmp`) at worst re-logs runs still inside the lookback window; the
 dashboard also dedups run counts by run ID, so counts stay correct either way.
 Persistence is a best-effort optimisation, never a correctness dependency.
@@ -430,6 +431,7 @@ version for reproducibility.
 | Distroless static  | [Distroless](https://github.com/GoogleContainerTools/distroless)  |
 | cplieger/httpx     | [httpx](https://github.com/cplieger/httpx), retry/backoff client  |
 | cplieger/health    | [health](https://github.com/cplieger/health), file-marker probe   |
+| cplieger/atomicfile | [atomicfile](https://github.com/cplieger/atomicfile), atomic state-file writes |
 | pgregory.net/rapid | [rapid](https://pkg.go.dev/pgregory.net/rapid), tests only        |
 
 ## Credits
