@@ -163,6 +163,9 @@ A few house rules the linters enforce that are easy to trip on:
 
 - **`sloglint` kv-only**: plain key/value pairs in `slog` calls, not attribute
   constructors.
+- **Logs are UTC**: a `utcTimeAttr` slog `ReplaceAttr` forces every
+  record's timestamp to UTC, so the image needs no `TZ` and embeds no
+  `time/tzdata`.
 - **`fieldalignment`**: order struct fields to minimise padding (pointer- and
   `time.Time`-bearing fields placed to keep the GC scan range tight).
 - **No new non-`cplieger` runtime dependencies** without discussion; the small,
