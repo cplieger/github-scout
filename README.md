@@ -124,7 +124,8 @@ which asks the `github.Client` to discover the owner's repos, then collects open
 PRs and issues with one cross-repo Search query each and walks the repos for
 failed runs and code-scanning alerts. New failures are deduplicated by run ID;
 the snapshot signals are emitted in full. Everything goes out as `slog` JSON to
-stdout. Alloy ships stdout to Loki; Grafana queries Loki. There is no HTTP
+stdout with UTC timestamps (zone-stable regardless of the container's `TZ`).
+Alloy ships stdout to Loki; Grafana queries Loki. There is no HTTP
 server and no listening port.
 
 The `collect` package depends on a small consumer-side `apiClient` interface
