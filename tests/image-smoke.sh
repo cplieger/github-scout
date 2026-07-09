@@ -24,7 +24,7 @@ IMG="${1:?usage: image-smoke.sh <image-ref>}"
 NAME="smoke-github-scout-$$"
 TIMEOUT=60 # covers the 15s HEALTHCHECK start-period + the first 30s probe interval + margin
 
-# shellcheck disable=SC2329  # invoked indirectly via trap
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via trap
 cleanup() {
   code=$?
   # Dump container logs only on failure (a passing run stays quiet).
