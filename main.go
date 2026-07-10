@@ -27,7 +27,6 @@ package main
 import (
 	"context"
 	"log/slog"
-	"math/rand/v2"
 	"net/http"
 	"os"
 	"os/signal"
@@ -41,6 +40,8 @@ import (
 	"github.com/cplieger/github-scout/internal/urlsafe"
 	"github.com/cplieger/health"
 	"github.com/cplieger/httpx/v2"
+	"github.com/cplieger/scheduler"
+	"github.com/cplieger/slogx"
 )
 
 // seenStatePath persists the run dedup set across one-shot `trigger`
@@ -58,8 +59,7 @@ func main() {
 	// Install the JSON handler before anything logs (including config.Load
 	// warnings) so every line is JSON on stdout; setupLogging sets the level
 	// once config is read.
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout,
-		&slog.HandlerOptions{Level: logLevel, ReplaceAttr: utcTimeAttr})))
+	logLevel = slogx.Setup(slogx.Options{Format: slogx.JSON, Output: os.Stdout})
 
 	// CLI subcommands for the distroless image (no shell): `health` for the
 	// Docker healthcheck (checks the marker file), `trigger` for a one-shot
@@ -211,35 +211,16 @@ func runScan(ctx context.Context, collector *collect.Collector) (healthy bool) {
 	return collector.Scan(ctx)
 }
 
-// jitteredDelay returns the next poll delay: interval drawn uniformly from
-// [interval-interval/10, interval+interval/10). Extracted from runScheduled
-// so the ±10% band invariant can be property-tested in isolation.
-func jitteredDelay(interval time.Duration) time.Duration {
-	jitterMax := max(1, int(interval/5))
-	jitter := time.Duration(rand.IntN(jitterMax)) //nolint:gosec // G404: scheduling jitter, not crypto
-	return interval - interval/10 + jitter
-}
-
 // runScheduled scans on each tick of a ScanInterval timer with ±10% jitter
-// until ctx is cancelled. Jitter avoids a predictable, synchronized hammer
-// on the GitHub API across restarts. The first iteration fires immediately
-// (zero delay) so the first scan runs promptly on boot; boot health is set
-// healthy by the caller, so this loop only ever updates the marker from a
+// until ctx is cancelled, via scheduler.RunLoop. Jitter avoids a predictable,
+// synchronized hammer on the GitHub API across restarts. FireOnStart runs the
+// first scan immediately on boot (not after a full interval); boot health is
+// set healthy by the caller, so this loop only ever updates the marker from a
 // completed scan's repo-discovery result and never gates startup health.
 func runScheduled(ctx context.Context, interval time.Duration, collector *collect.Collector, marker *health.Marker) {
-	delay := time.Duration(0)
-	for {
-		timer := time.NewTimer(delay)
-
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return
-		case <-timer.C:
-			marker.Set(runScan(ctx, collector))
-		}
-		delay = jitteredDelay(interval)
-	}
+	scheduler.RunLoop(ctx, func(ctx context.Context) {
+		marker.Set(runScan(ctx, collector))
+	}, scheduler.LoopOptions{Interval: interval, FireOnStart: true, Jitter: 0.10})
 }
 
 // logLevel backs the JSON handler installed at the start of main(). The JSON
@@ -250,7 +231,7 @@ func runScheduled(ctx context.Context, interval time.Duration, collector *collec
 // github-scout's own error logs are still caught by the shared error panels).
 // Installing it at the start of main() — before config.Load runs — means even
 // config-validation warnings emit as JSON on stdout, not text on stderr.
-var logLevel = new(slog.LevelVar)
+var logLevel *slog.LevelVar
 
 // setupLogging sets the configured level on logLevel, the LevelVar backing the
 // handler installed in main(). Called once by loadConfig after LOG_LEVEL is
@@ -274,16 +255,4 @@ func logConfig(cfg *config.Config) {
 		"lookback", cfg.Lookback,
 		"excluded_repos", len(cfg.ExcludeRepos),
 		"code_scanning_excluded_repos", len(cfg.CodeScanningExcludeRepos))
-}
-
-// utcTimeAttr is a slog ReplaceAttr that renders the record's built-in time
-// key in UTC, so log-line timestamps are zone-stable regardless of the
-// container's TZ (the fleet logs-in-UTC standard). It rewrites only the
-// top-level time attribute; a user attribute that happens to share the "time"
-// key inside a group is left untouched.
-func utcTimeAttr(groups []string, a slog.Attr) slog.Attr {
-	if len(groups) == 0 && a.Key == slog.TimeKey && a.Value.Kind() == slog.KindTime {
-		a.Value = slog.TimeValue(a.Value.Time().UTC())
-	}
-	return a
 }

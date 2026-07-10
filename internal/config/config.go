@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/cplieger/github-scout/internal/urlsafe"
+	"github.com/cplieger/scheduler"
+	"github.com/cplieger/slogx"
 )
 
 // Defaults for env-var-backed fields.
@@ -89,6 +91,12 @@ type Config struct {
 
 // Load reads configuration from the environment with sensible defaults.
 func Load() Config {
+	rawLogLevel := os.Getenv("LOG_LEVEL")
+	lvl, ok := slogx.ParseLevel(rawLogLevel, slog.LevelInfo)
+	if !ok {
+		slog.Warn("invalid LOG_LEVEL, using default", "value", rawLogLevel, "default", "info")
+	}
+
 	return Config{
 		Token:                    strings.TrimSpace(os.Getenv("GITHUB_TOKEN")),
 		Owner:                    strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
@@ -98,41 +106,26 @@ func Load() Config {
 		IssueExclude:             getEnv("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
 		ScanInterval:             parseScanInterval(os.Getenv("SCAN_INTERVAL")),
 		Lookback:                 time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
-		LogLevel:                 parseLogLevel(os.Getenv("LOG_LEVEL")),
+		LogLevel:                 lvl,
 	}
 }
 
 // parseScanInterval parses SCAN_INTERVAL into the gap between scans. It
-// accepts a Go duration (e.g. "15m", "1h30m") or the sentinels off /
-// disabled / 0 / 0s, which select resident-idle mode (return 0: no internal
-// timer, scans driven by the `trigger` subcommand). An unset value uses the
-// default; an invalid or negative value warns and falls back to the default
-// so a typo degrades to "still scanning" rather than silent idle.
+// delegates to scheduler.ParseInterval (with WithBounds clamping a built-in
+// cadence to [minScanInterval, maxScanInterval]): a Go duration (e.g. "15m",
+// "1h30m") runs built-in; the sentinels off / disabled / 0 / 0s select
+// resident-idle mode (return 0: no internal timer, scans driven by the
+// `trigger` subcommand); an unset value uses the default; and an invalid or
+// negative value warns and falls back to the default so a typo degrades to
+// "still scanning" rather than silent idle.
 func parseScanInterval(raw string) time.Duration {
-	trimmed := strings.TrimSpace(raw)
-	switch strings.ToLower(trimmed) {
-	case "":
-		return DefaultScanInterval
-	case "off", "disabled", "0", "0s":
+	s := scheduler.ParseInterval(raw, DefaultScanInterval,
+		scheduler.WithBounds(minScanInterval, maxScanInterval),
+		scheduler.WithName("SCAN_INTERVAL"))
+	if s.Mode == scheduler.ModeExternal {
 		return 0
 	}
-	d, err := time.ParseDuration(trimmed)
-	switch {
-	case err != nil:
-		slog.Warn("invalid SCAN_INTERVAL, using default", "value", raw, "default", DefaultScanInterval, "error", err)
-		return DefaultScanInterval
-	case d < 0:
-		slog.Warn("negative SCAN_INTERVAL, using default", "value", raw, "default", DefaultScanInterval)
-		return DefaultScanInterval
-	case d > maxScanInterval:
-		slog.Warn("SCAN_INTERVAL clamped", "value", raw, "max", maxScanInterval)
-		return maxScanInterval
-	case d > 0 && d < minScanInterval:
-		slog.Warn("SCAN_INTERVAL below minimum, clamping", "value", raw, "min", minScanInterval)
-		return minScanInterval
-	default:
-		return d
-	}
+	return s.Interval
 }
 
 // getEnv returns os.Getenv(key) when set to a non-empty value, otherwise
@@ -196,15 +189,4 @@ func clampedInt(key string, def, lo, hi int) int {
 		slog.Warn("env value clamped", "key", key, "requested", v, "clamped_to", clamped)
 	}
 	return clamped
-}
-
-// parseLogLevel converts LOG_LEVEL to slog.Level. It delegates to
-// slog.Level.UnmarshalText (case-insensitive; also accepts offset syntax such
-// as "warn-4"), falling back to Info for an empty or unrecognized value.
-func parseLogLevel(s string) slog.Level {
-	var lvl slog.Level
-	if err := lvl.UnmarshalText([]byte(strings.TrimSpace(s))); err != nil {
-		return slog.LevelInfo
-	}
-	return lvl
 }
