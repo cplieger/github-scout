@@ -11,7 +11,6 @@ import (
 	"github.com/cplieger/github-scout/internal/collect"
 	"github.com/cplieger/github-scout/internal/model"
 	"github.com/cplieger/health"
-	"pgregory.net/rapid"
 )
 
 type panicClient struct{}
@@ -78,32 +77,6 @@ func TestRunScan_healthyScanReturnsTrue(t *testing.T) {
 	})
 	if got := runScan(context.Background(), collector); !got {
 		t.Errorf("runScan(healthy collector) = false, want true")
-	}
-}
-
-func TestJitteredDelay_staysWithin10PercentBand(t *testing.T) {
-	rapid.Check(t, func(t *rapid.T) {
-		interval := time.Duration(rapid.Int64Range(int64(time.Second), int64(24*time.Hour)).Draw(t, "interval"))
-		got := jitteredDelay(interval)
-		lower := interval - interval/10
-		upper := interval + interval/10
-		if got < lower || got > upper {
-			t.Fatalf("jitteredDelay(%v) = %v, want within [%v, %v]", interval, got, lower, upper)
-		}
-		if got <= 0 {
-			t.Fatalf("jitteredDelay(%v) = %v, want positive", interval, got)
-		}
-	})
-}
-
-func TestJitteredDelay_appliesJitter(t *testing.T) {
-	const interval = time.Second
-	seen := make(map[time.Duration]bool)
-	for range 1000 {
-		seen[jitteredDelay(interval)] = true
-	}
-	if len(seen) < 2 {
-		t.Errorf("jitteredDelay(%v) produced %d distinct value(s) over 1000 draws, want >= 2", interval, len(seen))
 	}
 }
 

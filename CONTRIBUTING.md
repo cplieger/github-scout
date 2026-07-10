@@ -163,7 +163,7 @@ A few house rules the linters enforce that are easy to trip on:
 
 - **`sloglint` kv-only**: plain key/value pairs in `slog` calls, not attribute
   constructors.
-- **Logs are UTC**: a `utcTimeAttr` slog `ReplaceAttr` forces every
+- **Logs are UTC**: the `slogx` library (its `UTCTime` `ReplaceAttr`) forces every
   record's timestamp to UTC, so the image needs no `TZ` and embeds no
   `time/tzdata`.
 - **`fieldalignment`**: order struct fields to minimise padding (pointer- and

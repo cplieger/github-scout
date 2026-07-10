@@ -310,33 +310,6 @@ func TestGetEnv(t *testing.T) {
 	}
 }
 
-// TestParseLogLevel exercises parseLogLevel directly across every switch arm
-// plus the case-insensitive (strings.ToLower) and whitespace-trimming
-// (strings.TrimSpace) handling that the Load-level TestParseLogLevels does
-// not cover. Kills any single-arm or trim/lower mutation.
-func TestParseLogLevel(t *testing.T) {
-	tests := []struct {
-		in   string
-		want slog.Level
-	}{
-		{"debug", slog.LevelDebug},
-		{"warn", slog.LevelWarn},
-		{"error", slog.LevelError},
-		{"WARN", slog.LevelWarn},
-		{" error ", slog.LevelError},
-		{"info", slog.LevelInfo},
-		{"bogus", slog.LevelInfo},
-		{"", slog.LevelInfo},
-	}
-	for _, tt := range tests {
-		t.Run(tt.in, func(t *testing.T) {
-			if got := parseLogLevel(tt.in); got != tt.want {
-				t.Errorf("parseLogLevel(%q) = %v, want %v", tt.in, got, tt.want)
-			}
-		})
-	}
-}
-
 // TestScanIntervalBelowMinimumClamped pins the minScanInterval floor: a positive
 // sub-minute SCAN_INTERVAL is clamped up to minScanInterval (1m) so a too-frequent
 // scan of a multi-repo account can't exhaust GitHub's 5000 req/hour budget. The

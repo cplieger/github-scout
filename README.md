@@ -320,15 +320,66 @@ Every panel is built on a single Loki selector, for example:
 {container="github-scout"} | json | msg=`open pull request`
 ```
 
-Tables render the `url` field as a click-through link. Because the events are
-plain logs, you can also write a Loki ruler alert
-(`count_over_time(... [1h]) > 0`) to be notified the moment anything breaks. You
-can ship two Loki ruler alerts: one fires on the `scan degraded` line (a scan that
-ran but went blind — a pervasively rejected token, a signal dark across every
-repo, or a rate limit), and a liveness
-rule fires when no `scan complete` line appears for 40m (a wedged container or a
-token revoked at discovery, which the Scan Integrity tile cannot show because no
-scan ran).
+Tables render the `url` field as a click-through link.
+
+### Alerting
+
+github-scout has no metrics endpoint; its operational state is in its JSON
+logs. Ship the container's logs to Loki as above and evaluate these two rules
+with [Loki's ruler](https://grafana.com/docs/loki/latest/alert/); firing alerts
+deliver through your Alertmanager exactly like Prometheus metric alerts. The
+first catches a scan that ran but went blind (a rejected token, a rate limit,
+or a signal dark across every repo); the second is a deadman that fires when no
+scan completes at all.
+
+```yaml
+groups:
+  - name: github-scout
+    rules:
+      - alert: GithubScoutScanDegraded
+        expr: |
+          sum(count_over_time({container="github-scout"} |= `scan degraded` | json | msg=`scan degraded` [40m])) >= 2
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "github-scout scans degraded (signal counts unverified)"
+          description: >
+            github-scout logged repeated degraded scans in the last 40m: a
+            signal could not be read, so the dashboard counts (especially Code
+            Scanning Alerts) may read 0 because it could not check, not because
+            nothing is there. The `scan degraded` log line carries the cause
+            (token_invalid / rate_limited / no_repos_visible /
+            code_scanning_blind / runs_blind / signal_blind) and the
+            failed_signals field.
+      - alert: GithubScoutScanStalled
+        expr: |
+          absent_over_time({container="github-scout"} |= `scan complete` [40m])
+        for: 0m
+        labels:
+          severity: warning
+        annotations:
+          summary: "github-scout has not completed a scan in 40m"
+          description: >
+            No "scan complete" line from github-scout in 40m (it scans every
+            ~15m by default). The scanner is wedged, the container is down, or
+            the token was revoked at repo discovery, so every dashboard panel
+            goes stale and silently reads empty. The Scan Integrity tile cannot
+            flag this (no scan ran), so this liveness check does. Check the
+            container and the GITHUB_TOKEN.
+```
+
+Thresholds and the `severity` label are starting points. Both windows assume
+the default `SCAN_INTERVAL=15m` (40m is roughly 2.5 scan intervals), so widen
+them if you lengthen `SCAN_INTERVAL`; adjust the `container` selector (or `job`
+/ `service`, depending on your log collector) to your deployment, and route by
+whatever labels your Alertmanager uses.
+
+These rules assume built-in scheduling (`SCAN_INTERVAL` set to a duration),
+where the scan runs as PID 1 and its logs reach your collector. Under
+`SCAN_INTERVAL=off` each `github-scout trigger` is a `docker exec` child whose
+output goes to the trigger, not the container's log stream, so neither rule
+fires; alert on your external scheduler's own job result instead.
 
 ## Healthcheck
 
