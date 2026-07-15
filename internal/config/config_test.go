@@ -182,7 +182,7 @@ func TestExcludeQueriesDefaultWhenUnset(t *testing.T) {
 
 func TestExcludeQueriesOverriddenByEnv(t *testing.T) {
 	// A non-empty value is used verbatim instead of the default (exercises
-	// getEnv's "env set" branch).
+	// envx.String's "env set" branch).
 	t.Setenv("PR_EXCLUDE_QUERY", "-author:dependabot")
 	t.Setenv("ISSUE_EXCLUDE_QUERY", "-label:wontfix")
 
@@ -283,31 +283,6 @@ func (h *countingHandler) count(msg string) int {
 		}
 	}
 	return n
-}
-
-// TestGetEnv exercises the getEnv helper directly at both branches: an
-// explicitly-empty value is treated as unset and falls back to the default,
-// and a non-empty value is returned verbatim. The Load-level tests cover the
-// PRExclude/IssueExclude wiring; this pins the helper itself.
-func TestGetEnv(t *testing.T) {
-	const key = "GITHUB_SCOUT_TEST_GETENV"
-	tests := []struct {
-		name     string
-		value    string
-		fallback string
-		want     string
-	}{
-		{name: "empty value treated as unset, returns fallback", value: "", fallback: "def", want: "def"},
-		{name: "non-empty value used verbatim", value: "actual", fallback: "def", want: "actual"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(key, tt.value)
-			if got := getEnv(key, tt.fallback); got != tt.want {
-				t.Errorf("getEnv(%q) with value %q = %q, want %q", key, tt.value, got, tt.want)
-			}
-		})
-	}
 }
 
 // TestScanIntervalBelowMinimumClamped pins the minScanInterval floor: a positive
