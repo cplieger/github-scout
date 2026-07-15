@@ -13,13 +13,13 @@
 package config
 
 import (
-	"cmp"
 	"log/slog"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/cplieger/envx"
 	"github.com/cplieger/github-scout/internal/urlsafe"
 	"github.com/cplieger/scheduler"
 	"github.com/cplieger/slogx"
@@ -102,8 +102,8 @@ func Load() Config {
 		Owner:                    strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
 		ExcludeRepos:             parseExcludes(os.Getenv("EXCLUDE_REPOS")),
 		CodeScanningExcludeRepos: parseExcludes(os.Getenv("CODE_SCANNING_EXCLUDE_REPOS")),
-		PRExclude:                getEnv("PR_EXCLUDE_QUERY", DefaultPRExclude),
-		IssueExclude:             getEnv("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
+		PRExclude:                envx.String("PR_EXCLUDE_QUERY", DefaultPRExclude),
+		IssueExclude:             envx.String("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
 		ScanInterval:             parseScanInterval(os.Getenv("SCAN_INTERVAL")),
 		Lookback:                 time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
 		LogLevel:                 lvl,
@@ -126,15 +126,6 @@ func parseScanInterval(raw string) time.Duration {
 		return 0
 	}
 	return s.Interval
-}
-
-// getEnv returns os.Getenv(key) when set to a non-empty value, otherwise
-// fallback. An explicitly-set empty string is treated as unset — sufficient
-// for this app's configuration where all values are non-empty or absent.
-// Note: to intentionally disable an exclusion filter, set it to a no-op
-// qualifier rather than empty (empty falls back to the default).
-func getEnv(key, fallback string) string {
-	return cmp.Or(os.Getenv(key), fallback)
 }
 
 // Valid reports whether the config has the minimum needed to run: an owner

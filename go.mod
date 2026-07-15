@@ -11,3 +11,5 @@ require github.com/cplieger/atomicfile/v2 v2.1.3
 require github.com/cplieger/slogx v1.1.1
 
 require github.com/cplieger/scheduler v1.1.1
+
+require github.com/cplieger/envx v1.0.0
