@@ -2,7 +2,7 @@ module github.com/cplieger/github-scout
 
 go 1.26.5
 
-require github.com/cplieger/health v1.1.7
+require github.com/cplieger/health v1.2.0
 
 require github.com/cplieger/httpx/v2 v2.5.0
 
