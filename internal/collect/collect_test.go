@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cplieger/github-scout/internal/model"
+	"github.com/cplieger/slogx/capture"
 )
 
 // fakeClient is a scripted apiClient for driving the collector without HTTP.
@@ -106,7 +107,7 @@ func TestScanCodeScanningExcludeSkipsSignalNotRepo(t *testing.T) {
 		Lookback:            72 * time.Hour,
 		CodeScanningExclude: map[string]bool{"private": true},
 	})
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
@@ -117,15 +118,15 @@ func TestScanCodeScanningExcludeSkipsSignalNotRepo(t *testing.T) {
 	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "" {
 		t.Errorf("failed_signals = %q, want empty (the only code-scanning failure was on an excluded repo)", got)
 	}
-	if rec.countMsg("scan degraded") != 0 {
-		t.Errorf("excluding a repo's code scanning must not escalate; got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 0 {
+		t.Errorf("excluding a repo's code scanning must not escalate; got %d", rec.CountExact("scan degraded"))
 	}
 	// The excluded repo is still scanned for runs (event-once "workflow run").
-	if n := rec.countMsg("workflow run"); n != 1 {
+	if n := rec.CountExact("workflow run"); n != 1 {
 		t.Errorf("workflow run count = %d, want 1 (the excluded repo's runs are still scanned)", n)
 	}
 	// The non-excluded repo's code scanning is still read.
-	if n := rec.countMsg("code scanning alert"); n != 1 {
+	if n := rec.CountExact("code scanning alert"); n != 1 {
 		t.Errorf("code scanning alert count = %d, want 1 (the non-excluded repo is still read)", n)
 	}
 }
@@ -143,7 +144,7 @@ func TestScanPartialFailuresStillHealthy(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/x": errors.New("alerts 500")},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	if !c.Scan(context.Background()) {
 		t.Errorf("partial per-signal failures must not flip the scan unhealthy")
@@ -157,8 +158,8 @@ func TestScanPartialFailuresStillHealthy(t *testing.T) {
 	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "open_prs,open_issues,runs,code_scanning" {
 		t.Errorf("failed_signals = %q, want all four signals", got)
 	}
-	if rec.countMsg("scan degraded") != 1 {
-		t.Errorf("a fully-blind scan must emit exactly one ERROR-level \"scan degraded\" line, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Errorf("a fully-blind scan must emit exactly one ERROR-level \"scan degraded\" line, got %d", rec.CountExact("scan degraded"))
 	}
 	// All four signals are blind here with no systemic flag, so the diagnosis
 	// ladder resolves to code_scanning_blind — pinning that it outranks
@@ -177,13 +178,13 @@ func TestScanEmitsAllFourSignals(t *testing.T) {
 		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3, Rule: "go/sql-injection"}}},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
 	for _, msg := range []string{"open pull request", "open issue", "workflow run", "code scanning alert"} {
-		if rec.countMsg(msg) != 1 {
-			t.Errorf("msg %q emitted %d times, want 1", msg, rec.countMsg(msg))
+		if rec.CountExact(msg) != 1 {
+			t.Errorf("msg %q emitted %d times, want 1", msg, rec.CountExact(msg))
 		}
 	}
 
@@ -196,7 +197,7 @@ func TestScanEmitsAllFourSignals(t *testing.T) {
 		t.Errorf("open_issues = %d (found=%v), want 1", n, ok)
 	}
 	// No run-list error occurred, so the partial-failure warning must not fire.
-	if n := rec.countMsg("partial failure listing runs"); n != 0 {
+	if n := rec.CountExact("partial failure listing runs"); n != 0 {
 		t.Errorf("successful run listing emitted %d partial-failure warnings, want 0", n)
 	}
 }
@@ -212,16 +213,16 @@ func TestRunsDedupButSnapshotsRepeat(t *testing.T) {
 		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3}}},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 	c.Scan(context.Background())
 
-	if got := rec.countMsg("workflow run"); got != 1 {
+	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("workflow run emitted %d times, want 1 (event-once dedup)", got)
 	}
 	for _, msg := range []string{"open pull request", "open issue", "code scanning alert"} {
-		if got := rec.countMsg(msg); got != 2 {
+		if got := rec.CountExact(msg); got != 2 {
 			t.Errorf("snapshot %q emitted %d times over 2 scans, want 2", msg, got)
 		}
 	}
@@ -241,11 +242,11 @@ func TestScanEmitsEveryRunAndCountsFailures(t *testing.T) {
 		}},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
-	if got := rec.countMsg("workflow run"); got != 4 {
+	if got := rec.CountExact("workflow run"); got != 4 {
 		t.Errorf("emitted %d workflow-run lines, want 4 (every completed run, not just failures)", got)
 	}
 	if n, ok := rec.intAttr("scan complete", "new_runs"); !ok || n != 4 {
@@ -266,18 +267,18 @@ func TestExcludeReposSkipsAllSignals(t *testing.T) {
 		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 4}}},
 	}
 	c := newCollector(t, fc, map[string]bool{"noisy": true})
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
 	if fc.runCalls != 1 {
 		t.Errorf("ListRuns called %d times, want 1 (noisy excluded)", fc.runCalls)
 	}
-	if rec.countMsg("open pull request") != 1 {
-		t.Errorf("expected only the non-noisy PR, got %d", rec.countMsg("open pull request"))
+	if rec.CountExact("open pull request") != 1 {
+		t.Errorf("expected only the non-noisy PR, got %d", rec.CountExact("open pull request"))
 	}
-	if rec.countMsg("open issue") != 0 {
-		t.Errorf("noisy repo's issue should be filtered, got %d", rec.countMsg("open issue"))
+	if rec.CountExact("open issue") != 0 {
+		t.Errorf("noisy repo's issue should be filtered, got %d", rec.CountExact("open issue"))
 	}
 
 	// The per-repo loop counters surfaced in the summary: one repo scanned
@@ -317,7 +318,7 @@ func TestStatePersistsDedupAcrossProcesses(t *testing.T) {
 		{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)},
 	}}
 	mk := func() (*Collector, *recordingHandler) {
-		rec := &recordingHandler{}
+		rec := newRecordingHandler()
 		fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "x"}}, runs: runs}
 		c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
 		return c, rec
@@ -325,17 +326,17 @@ func TestStatePersistsDedupAcrossProcesses(t *testing.T) {
 
 	c1, rec1 := mk()
 	c1.Scan(context.Background())
-	if got := rec1.countMsg("workflow run"); got != 1 {
+	if got := rec1.CountExact("workflow run"); got != 1 {
 		t.Fatalf("first trigger emitted %d workflow-run lines, want 1", got)
 	}
 	// A successful atomic save must not log the save-failure warning.
-	if got := rec1.countMsg("dedup state save failed"); got != 0 {
+	if got := rec1.CountExact("dedup state save failed"); got != 0 {
 		t.Errorf("successful state save emitted %d save-failure warnings, want 0", got)
 	}
 
 	c2, rec2 := mk() // fresh "process", same state file
 	c2.Scan(context.Background())
-	if got := rec2.countMsg("workflow run"); got != 0 {
+	if got := rec2.CountExact("workflow run"); got != 0 {
 		t.Errorf("second trigger emitted %d workflow-run lines, want 0 (dedup state reloaded)", got)
 	}
 	if _, ok := c2.seen[9]; !ok {
@@ -351,14 +352,14 @@ func TestStateCorruptStartsCold(t *testing.T) {
 	if err := os.WriteFile(statePath, []byte("{not valid json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	fc := &fakeClient{
 		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
 		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
 	c.Scan(context.Background()) // must not panic
-	if got := rec.countMsg("workflow run"); got != 1 {
+	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("corrupt state should start cold and emit the run; got %d", got)
 	}
 	if _, ok := c.seen[9]; !ok {
@@ -433,65 +434,58 @@ func (w testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-type recordingHandler struct{ records []slog.Record }
+// recordingHandler is the shared slogx capture.Recorder plus the attr-lookup
+// helpers these tests assert scan summaries with. Recording (mutex, record
+// Clone) and exact-message counting (CountExact — the semantics the former
+// hand-rolled countMsg had, and what the alert-pinned messages like
+// "scan degraded" require) come from the embedded Recorder.
+type recordingHandler struct{ *capture.Recorder }
 
-func (h *recordingHandler) Enabled(context.Context, slog.Level) bool { return true }
-func (h *recordingHandler) Handle(_ context.Context, r slog.Record) error {
-	h.records = append(h.records, r)
-	return nil
+func newRecordingHandler() *recordingHandler {
+	return &recordingHandler{Recorder: &capture.Recorder{}}
 }
-func (h *recordingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *recordingHandler) WithGroup(string) slog.Handler      { return h }
 
-func (h *recordingHandler) countMsg(msg string) int {
-	n := 0
-	for _, r := range h.records {
+// firstRecord returns the first captured record whose message is msg.
+func (h *recordingHandler) firstRecord(msg string) (slog.Record, bool) {
+	for _, r := range h.Records() {
 		if r.Message == msg {
-			n++
+			return r, true
 		}
 	}
-	return n
+	return slog.Record{}, false
 }
 
 // intAttr returns the int64 value of attribute key on the first record with
 // the given message, used to assert scan-summary counts (new_runs, etc.).
-func (h *recordingHandler) intAttr(msg, key string) (int64, bool) {
-	for _, r := range h.records {
-		if r.Message != msg {
-			continue
-		}
-		var (
-			out   int64
-			found bool
-		)
-		r.Attrs(func(a slog.Attr) bool {
-			if a.Key == key {
-				out, found = a.Value.Int64(), true
-				return false
-			}
-			return true
-		})
-		return out, found
+func (h *recordingHandler) intAttr(msg, key string) (out int64, found bool) {
+	r, ok := h.firstRecord(msg)
+	if !ok {
+		return 0, false
 	}
-	return 0, false
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			out, found = a.Value.Int64(), true
+			return false
+		}
+		return true
+	})
+	return out, found
 }
 
 // attrKeys returns the set of attribute keys on the first record whose
 // message is msg, or nil if no such record exists. Used to assert a signal's
 // emitted slog field names against the matching model type's JSON tag set.
 func (h *recordingHandler) attrKeys(msg string) map[string]bool {
-	for _, r := range h.records {
-		if r.Message != msg {
-			continue
-		}
-		keys := make(map[string]bool)
-		r.Attrs(func(a slog.Attr) bool {
-			keys[a.Key] = true
-			return true
-		})
-		return keys
+	r, ok := h.firstRecord(msg)
+	if !ok {
+		return nil
 	}
-	return nil
+	keys := make(map[string]bool)
+	r.Attrs(func(a slog.Attr) bool {
+		keys[a.Key] = true
+		return true
+	})
+	return keys
 }
 
 // TestPruneBoundaryRetainsRunsAtCutoff pins prune's inclusive lower edge: a
@@ -527,14 +521,14 @@ func TestStateOversizedStartsCold(t *testing.T) {
 	if err := os.WriteFile(statePath, make([]byte, maxStateBytes+100), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	fc := &fakeClient{
 		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
 		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
 	c.Scan(context.Background()) // must not OOM or panic
-	if got := rec.countMsg("workflow run"); got != 1 {
+	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("oversized state should start cold and emit the run; got %d", got)
 	}
 	if _, ok := c.seen[9]; !ok {
@@ -552,14 +546,14 @@ func TestStateNullJSONDoesNotNilMap(t *testing.T) {
 	if err := os.WriteFile(statePath, []byte("null"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	fc := &fakeClient{
 		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
 		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
 	c.Scan(context.Background()) // must not panic on a nil-map insert
-	if got := rec.countMsg("workflow run"); got != 1 {
+	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("null state should start cold and emit the run; got %d", got)
 	}
 	if _, ok := c.seen[9]; !ok {
@@ -618,7 +612,7 @@ func TestLogKeysMatchModelTags(t *testing.T) {
 		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3, Rule: "go/sql-injection"}}},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
@@ -673,39 +667,35 @@ func sortedKeys(m map[string]bool) []string {
 // the given message, used to assert scan-summary flags (degraded,
 // auth_or_ratelimit).
 func (h *recordingHandler) boolAttr(msg, key string) (value, found bool) {
-	for _, r := range h.records {
-		if r.Message != msg {
-			continue
-		}
-		r.Attrs(func(a slog.Attr) bool {
-			if a.Key == key {
-				value, found = a.Value.Bool(), true
-				return false
-			}
-			return true
-		})
-		return value, found
+	r, ok := h.firstRecord(msg)
+	if !ok {
+		return false, false
 	}
-	return false, false
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			value, found = a.Value.Bool(), true
+			return false
+		}
+		return true
+	})
+	return value, found
 }
 
 // strAttr returns the string value of attribute key on the first record with
 // the given message (e.g. failed_signals).
 func (h *recordingHandler) strAttr(msg, key string) (value string, found bool) {
-	for _, r := range h.records {
-		if r.Message != msg {
-			continue
-		}
-		r.Attrs(func(a slog.Attr) bool {
-			if a.Key == key {
-				value, found = a.Value.String(), true
-				return false
-			}
-			return true
-		})
-		return value, found
+	r, ok := h.firstRecord(msg)
+	if !ok {
+		return "", false
 	}
-	return "", false
+	r.Attrs(func(a slog.Attr) bool {
+		if a.Key == key {
+			value, found = a.Value.String(), true
+			return false
+		}
+		return true
+	})
+	return value, found
 }
 
 // TestSnapshotsFilterForeignOwnerRepos pins the foreign-owner defensive filter
@@ -728,14 +718,14 @@ func TestSnapshotsFilterForeignOwnerRepos(t *testing.T) {
 		},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
-	if got := rec.countMsg("open pull request"); got != 1 {
+	if got := rec.CountExact("open pull request"); got != 1 {
 		t.Errorf("emitted %d PR lines, want 1 (foreign-owner PRs must be filtered)", got)
 	}
-	if got := rec.countMsg("open issue"); got != 1 {
+	if got := rec.CountExact("open issue"); got != 1 {
 		t.Errorf("emitted %d issue lines, want 1 (foreign-owner issues must be filtered)", got)
 	}
 }
@@ -752,7 +742,7 @@ func TestSaveStateWriteFailureToleratedAndWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(notADir, "seen-runs.json")
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	fc := &fakeClient{
 		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
 		runs: map[string][]model.WorkflowRun{"cplieger/x": {
@@ -769,7 +759,7 @@ func TestSaveStateWriteFailureToleratedAndWarns(t *testing.T) {
 	if !c.Scan(context.Background()) {
 		t.Errorf("a best-effort state-save failure must not flip the scan unhealthy")
 	}
-	if got := rec.countMsg("dedup state save failed"); got != 1 {
+	if got := rec.CountExact("dedup state save failed"); got != 1 {
 		t.Errorf("save failure should warn once; got %d", got)
 	}
 }
@@ -824,11 +814,11 @@ func TestCollectRunsEmitsPartialRunsOnError(t *testing.T) {
 		runsErr: map[string]error{"cplieger/x": errors.New("list runs page 2: server error 500")},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
-	if got := rec.countMsg("workflow run"); got != 1 {
+	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("emitted %d workflow-run lines, want 1 (the partial set must be emitted even though the list errored)", got)
 	}
 	if n, ok := rec.intAttr("scan complete", "new_failures"); !ok || n != 1 {

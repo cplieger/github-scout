@@ -2,11 +2,12 @@ package config
 
 import (
 	"bytes"
-	"context"
 	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cplieger/slogx/capture"
 )
 
 func TestLoadDefaults(t *testing.T) {
@@ -230,7 +231,7 @@ func TestLookbackAtMaxIsAcceptedWithoutWarning(t *testing.T) {
 	if cfg.Lookback != maxLookbackHours*time.Hour {
 		t.Errorf("Lookback = %v, want %v (max accepted as-is)", cfg.Lookback, maxLookbackHours*time.Hour)
 	}
-	if n := rec.count("env value clamped"); n != 0 {
+	if n := rec.CountExact("env value clamped"); n != 0 {
 		t.Errorf("value at exactly the max should not warn; got %d clamp warnings", n)
 	}
 }
@@ -246,43 +247,19 @@ func TestLookbackAboveMaxIsClampedWithWarning(t *testing.T) {
 	if cfg.Lookback != maxLookbackHours*time.Hour {
 		t.Errorf("Lookback = %v, want clamped to %v", cfg.Lookback, maxLookbackHours*time.Hour)
 	}
-	if n := rec.count("env value clamped"); n != 1 {
+	if n := rec.CountExact("env value clamped"); n != 1 {
 		t.Errorf("value over the max should warn once; got %d clamp warnings", n)
 	}
 }
 
 // captureDefaultSlog redirects the global slog logger (which config's clamp
-// and parse warnings target) to a recording handler for the duration of the
-// test, restoring the previous default on cleanup.
-func captureDefaultSlog(t *testing.T) *countingHandler {
+// and parse warnings target) to a shared capture.Recorder for the duration of
+// the test, restoring the previous default on cleanup (capture.Default).
+// Assertions use CountExact — the exact-match semantics the former hand-rolled
+// countingHandler had.
+func captureDefaultSlog(t *testing.T) *capture.Recorder {
 	t.Helper()
-	rec := &countingHandler{}
-	prev := slog.Default()
-	slog.SetDefault(slog.New(rec))
-	t.Cleanup(func() { slog.SetDefault(prev) })
-	return rec
-}
-
-// countingHandler records log messages so a test can assert on warnings the
-// config package emits through the global slog logger.
-type countingHandler struct{ msgs []string }
-
-func (h *countingHandler) Enabled(context.Context, slog.Level) bool { return true }
-func (h *countingHandler) Handle(_ context.Context, r slog.Record) error {
-	h.msgs = append(h.msgs, r.Message)
-	return nil
-}
-func (h *countingHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *countingHandler) WithGroup(string) slog.Handler      { return h }
-
-func (h *countingHandler) count(msg string) int {
-	n := 0
-	for _, m := range h.msgs {
-		if m == msg {
-			n++
-		}
-	}
-	return n
+	return capture.Default(t)
 }
 
 // TestScanIntervalBelowMinimumClamped pins the minScanInterval floor: a positive
