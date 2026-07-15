@@ -22,7 +22,7 @@ func TestScanCleanScanNotDegraded(t *testing.T) {
 		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 2}}},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
@@ -35,8 +35,8 @@ func TestScanCleanScanNotDegraded(t *testing.T) {
 	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "" {
 		t.Errorf("failed_signals = %q, want empty on a clean scan", got)
 	}
-	if rec.countMsg("scan degraded") != 0 {
-		t.Errorf("a clean scan must not emit a \"scan degraded\" line, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 0 {
+		t.Errorf("a clean scan must not emit a \"scan degraded\" line, got %d", rec.CountExact("scan degraded"))
 	}
 }
 
@@ -50,7 +50,7 @@ func TestScanDegradedReportsBlindCodeScanning(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/x": errors.New("alerts 500")},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	if !c.Scan(context.Background()) {
 		t.Errorf("a blind code-scanning read must not flip health unhealthy")
@@ -58,8 +58,8 @@ func TestScanDegradedReportsBlindCodeScanning(t *testing.T) {
 	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "code_scanning" {
 		t.Errorf("failed_signals = %q, want \"code_scanning\"", got)
 	}
-	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("blind code-scanning must emit one \"scan degraded\" line, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Fatalf("blind code-scanning must emit one \"scan degraded\" line, got %d", rec.CountExact("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "code_scanning_blind" {
 		t.Errorf("cause = %q, want code_scanning_blind for an all-repos code-scanning failure", cause)
@@ -80,13 +80,13 @@ func TestScanTokenInvalidEscalates(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/x": model.ErrTokenInvalid},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	if !c.Scan(context.Background()) {
 		t.Errorf("a 401 must not flip health (a restart cannot fix a dead token)")
 	}
-	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("a pervasive 401 must emit one \"scan degraded\" line, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Fatalf("a pervasive 401 must emit one \"scan degraded\" line, got %d", rec.CountExact("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "token_invalid" {
 		t.Errorf("cause = %q, want token_invalid for a pervasive 401", cause)
@@ -111,7 +111,7 @@ func TestScanSparse401NotTokenInvalid(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/a": model.ErrTokenInvalid},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	if !c.Scan(context.Background()) {
 		t.Errorf("a transient 401 must not flip health")
@@ -122,7 +122,7 @@ func TestScanSparse401NotTokenInvalid(t *testing.T) {
 	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "code_scanning" {
 		t.Errorf("failed_signals = %q, want code_scanning", got)
 	}
-	if n := rec.countMsg("scan degraded"); n != 0 {
+	if n := rec.CountExact("scan degraded"); n != 0 {
 		t.Errorf("a sparse 401 with another read succeeding must NOT escalate; got %d \"scan degraded\" lines", n)
 	}
 }
@@ -138,7 +138,7 @@ func TestScanIncidentalRepoFailureNotEscalated(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/a": errors.New("alerts 500")},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
@@ -148,8 +148,8 @@ func TestScanIncidentalRepoFailureNotEscalated(t *testing.T) {
 	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "code_scanning" {
 		t.Errorf("failed_signals = %q, want \"code_scanning\"", got)
 	}
-	if rec.countMsg("scan degraded") != 0 {
-		t.Errorf("an incidental single-repo failure must NOT escalate to ERROR; got %d \"scan degraded\" lines", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 0 {
+		t.Errorf("an incidental single-repo failure must NOT escalate to ERROR; got %d \"scan degraded\" lines", rec.CountExact("scan degraded"))
 	}
 }
 
@@ -169,7 +169,7 @@ func TestScanPerRepo403NotEscalated(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/a": errors.New("alerts 403")},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
@@ -179,7 +179,7 @@ func TestScanPerRepo403NotEscalated(t *testing.T) {
 	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "code_scanning" {
 		t.Errorf("failed_signals = %q, want code_scanning", got)
 	}
-	if n := rec.countMsg("scan degraded"); n != 0 {
+	if n := rec.CountExact("scan degraded"); n != 0 {
 		t.Errorf("a per-repo 403 with another repo readable must NOT escalate; got %d \"scan degraded\" lines", n)
 	}
 }
@@ -197,12 +197,12 @@ func TestScanCodeScanningScopeBlindEscalates(t *testing.T) {
 		},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
-	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("code scanning blind for every repo must escalate once, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Fatalf("code scanning blind for every repo must escalate once, got %d", rec.CountExact("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "code_scanning_blind" {
 		t.Errorf("cause = %q, want code_scanning_blind", cause)
@@ -222,12 +222,12 @@ func TestScanNoCodeScanningExcludedFromBlind(t *testing.T) {
 		},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
-	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("the only code-scanning-capable repo being blind must escalate; the 404 repo must not dilute it, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Fatalf("the only code-scanning-capable repo being blind must escalate; the 404 repo must not dilute it, got %d", rec.CountExact("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "code_scanning_blind" {
 		t.Errorf("cause = %q, want code_scanning_blind", cause)
@@ -246,15 +246,15 @@ func TestScanNoCodeScanningCleanWhenOthersRead(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/nogha": model.ErrNoCodeScanning},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
 	if d, _ := rec.boolAttr("scan complete", "degraded"); d {
 		t.Errorf("a repo with no code scanning is benign; scan must not be degraded")
 	}
-	if rec.countMsg("scan degraded") != 0 {
-		t.Errorf("no code scanning on one repo must not escalate; got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 0 {
+		t.Errorf("no code scanning on one repo must not escalate; got %d", rec.CountExact("scan degraded"))
 	}
 }
 
@@ -266,12 +266,12 @@ func TestScanRateLimitedEscalates(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/x": model.ErrRateLimited},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
-	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("a 429 must escalate once, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Fatalf("a 429 must escalate once, got %d", rec.CountExact("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "rate_limited" {
 		t.Errorf("cause = %q, want rate_limited for a 429", cause)
@@ -287,15 +287,15 @@ func TestScanRunsBlindEscalates(t *testing.T) {
 		runsErr: map[string]error{"cplieger/x": errors.New("runs 500")},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
 	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "runs" {
 		t.Errorf("failed_signals = %q, want runs", got)
 	}
-	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("runs blind for every repo must escalate once, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Fatalf("runs blind for every repo must escalate once, got %d", rec.CountExact("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "runs_blind" {
 		t.Errorf("cause = %q, want runs_blind", cause)
@@ -315,15 +315,15 @@ func TestScanSearch401IsSignalBlindNotToken(t *testing.T) {
 		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 1}}},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
 	if got, _ := rec.strAttr("scan complete", "failed_signals"); !strings.Contains(got, "open_prs") {
 		t.Errorf("failed_signals = %q, want it to include open_prs", got)
 	}
-	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("a blind PR search must escalate once, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Fatalf("a blind PR search must escalate once, got %d", rec.CountExact("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "signal_blind" {
 		t.Errorf("cause = %q, want signal_blind (the token works; only the PR search was dark)", cause)
@@ -342,7 +342,7 @@ func TestScanContextCancelNotDegraded(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/x": context.Canceled},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	if !c.Scan(context.Background()) {
 		t.Errorf("discovery succeeded, so the scan stays healthy even when reads are cancelled")
@@ -350,8 +350,8 @@ func TestScanContextCancelNotDegraded(t *testing.T) {
 	if d, _ := rec.boolAttr("scan complete", "degraded"); d {
 		t.Errorf("context cancellation is a clean shutdown, not degradation")
 	}
-	if rec.countMsg("scan degraded") != 0 {
-		t.Errorf("a cancelled scan must not escalate; got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 0 {
+		t.Errorf("a cancelled scan must not escalate; got %d", rec.CountExact("scan degraded"))
 	}
 }
 
@@ -361,15 +361,15 @@ func TestScanContextCancelNotDegraded(t *testing.T) {
 func TestScanScannedZeroNotDegraded(t *testing.T) {
 	fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "skip"}}}
 	c := newCollector(t, fc, map[string]bool{"skip": true})
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
 	if d, _ := rec.boolAttr("scan complete", "degraded"); d {
 		t.Errorf("no repos scanned and searches OK -> not degraded")
 	}
-	if rec.countMsg("scan degraded") != 0 {
-		t.Errorf("scanned==0 must not escalate; got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 0 {
+		t.Errorf("scanned==0 must not escalate; got %d", rec.CountExact("scan degraded"))
 	}
 }
 
@@ -402,15 +402,15 @@ func TestScanSearchFailureNonSystemicEscalatesSignalBlind(t *testing.T) {
 			fc := clean()
 			tc.set(fc)
 			c := newCollector(t, fc, nil)
-			rec := &recordingHandler{}
+			rec := newRecordingHandler()
 			c.logger = slog.New(rec)
 			c.Scan(context.Background())
 
 			if got, _ := rec.strAttr("scan complete", "failed_signals"); got != tc.signal {
 				t.Errorf("failed_signals = %q, want %q", got, tc.signal)
 			}
-			if rec.countMsg("scan degraded") != 1 {
-				t.Fatalf("a failed cross-repo %s must escalate on its own, got %d", tc.name, rec.countMsg("scan degraded"))
+			if rec.CountExact("scan degraded") != 1 {
+				t.Fatalf("a failed cross-repo %s must escalate on its own, got %d", tc.name, rec.CountExact("scan degraded"))
 			}
 			if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "signal_blind" {
 				t.Errorf("cause = %q, want signal_blind for a non-systemic %s failure", cause, tc.name)
@@ -439,7 +439,7 @@ func TestScanErrCountSumsPerRepoFailures(t *testing.T) {
 		},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
@@ -467,12 +467,12 @@ func TestScanTokenInvalidBeatsRateLimited(t *testing.T) {
 		alertsErr: map[string]error{"cplieger/x": model.ErrRateLimited},
 	}
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	c.Scan(context.Background())
 
-	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("both systemic flags set must still emit exactly one \"scan degraded\", got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Fatalf("both systemic flags set must still emit exactly one \"scan degraded\", got %d", rec.CountExact("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "token_invalid" {
 		t.Errorf("cause = %q, want token_invalid (it outranks rate_limited)", cause)
@@ -491,7 +491,7 @@ func TestScanTokenInvalidBeatsRateLimited(t *testing.T) {
 func TestScanZeroReposVisibleEscalates(t *testing.T) {
 	fc := &fakeClient{repos: nil} // discovery OK, but the token sees zero repos
 	c := newCollector(t, fc, nil)
-	rec := &recordingHandler{}
+	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
 	if !c.Scan(context.Background()) {
 		t.Errorf("zero-repo discovery succeeded, so the scan stays healthy (a restart won't restore visibility)")
@@ -499,8 +499,8 @@ func TestScanZeroReposVisibleEscalates(t *testing.T) {
 	if d, ok := rec.boolAttr("scan complete", "degraded"); !ok || !d {
 		t.Errorf("degraded = %v (found=%v), want true when nothing was scanned", d, ok)
 	}
-	if rec.countMsg("scan degraded") != 1 {
-		t.Fatalf("a zero-repo scan must escalate once, got %d", rec.countMsg("scan degraded"))
+	if rec.CountExact("scan degraded") != 1 {
+		t.Fatalf("a zero-repo scan must escalate once, got %d", rec.CountExact("scan degraded"))
 	}
 	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "no_repos_visible" {
 		t.Errorf("cause = %q, want no_repos_visible", cause)
@@ -518,12 +518,12 @@ func TestScanDiscoveryCancelIsCleanShutdown(t *testing.T) {
 	for _, cancelErr := range []error{context.Canceled, context.DeadlineExceeded} {
 		fc := &fakeClient{reposErr: cancelErr}
 		c := newCollector(t, fc, nil)
-		rec := &recordingHandler{}
+		rec := newRecordingHandler()
 		c.logger = slog.New(rec)
 		if !c.Scan(context.Background()) {
 			t.Errorf("a discovery %v is a clean shutdown; health must not flip unhealthy", cancelErr)
 		}
-		if n := rec.countMsg("repo discovery failed"); n != 0 {
+		if n := rec.CountExact("repo discovery failed"); n != 0 {
 			t.Errorf("discovery %v must not log a discovery-failure ERROR, got %d", cancelErr, n)
 		}
 	}
