@@ -2,6 +2,7 @@ package collect
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"maps"
@@ -512,13 +513,27 @@ func TestPruneBoundaryRetainsRunsAtCutoff(t *testing.T) {
 	}
 }
 
-// TestStateOversizedStartsCold exercises loadState's maxStateBytes cap: a
-// state file larger than the limit trips atomicfile.ReadBounded's
-// ErrFileTooLarge, which loadState must tolerate by warning and starting cold
-// rather than OOMing or failing. The within-lookback run is then re-emitted.
+// TestStateOversizedStartsCold exercises the slot's bounded read (64 KiB): a
+// state file larger than the bound reads back truncated, so even
+// perfectly-valid JSON fails the parse and loadState degrades to the
+// documented cold start (warn, empty set) rather than OOMing or failing. The
+// within-lookback run is then re-emitted, same as a container recreate.
 func TestStateOversizedStartsCold(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "seen-runs.json")
-	if err := os.WriteFile(statePath, make([]byte, maxStateBytes+100), 0o600); err != nil {
+	// Valid JSON state well over the 64 KiB slot bound (~38 B/entry x 4000),
+	// so the truncation itself is the only corruption.
+	big := make(map[int64]time.Time, 4000)
+	for i := range int64(4000) {
+		big[1_000_000_000+i] = fixedNow().Add(-time.Hour)
+	}
+	data, err := json.Marshal(big)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) <= 1<<16 {
+		t.Fatalf("fixture too small to exceed the 64 KiB slot bound: %d bytes", len(data))
+	}
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	rec := newRecordingHandler()
@@ -528,6 +543,9 @@ func TestStateOversizedStartsCold(t *testing.T) {
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
 	c.Scan(context.Background()) // must not OOM or panic
+	if got := rec.CountExact("dedup state corrupt; starting cold"); got != 1 {
+		t.Errorf("truncated oversized state should warn corrupt-and-cold once; got %d", got)
+	}
 	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("oversized state should start cold and emit the run; got %d", got)
 	}
@@ -592,6 +610,42 @@ func TestSavePersistsOnlyPrunedSet(t *testing.T) {
 	}
 	if _, ok := c2.seen[1]; !ok {
 		t.Errorf("run 1 (within lookback) must be in the persisted set")
+	}
+}
+
+// TestSaveStateMergesConcurrentWriters pins saveState's merge-on-save: two
+// collectors sharing a StatePath (the scheduled daemon racing an exec'd
+// `trigger`, or two overlapping triggers) must not lose each other's entries.
+// Both are constructed BEFORE either saves, so each loads an empty set:
+// the interleaving where a blind whole-set write would let the second save
+// overwrite the first (the last-writer-wins lost update the slot transaction
+// closes). After both scans, a fresh collector must see BOTH runs.
+func TestSaveStateMergesConcurrentWriters(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "seen-runs.json")
+	mk := func(runID int64) *Collector {
+		fc := &fakeClient{
+			repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
+			runs: map[string][]model.WorkflowRun{"cplieger/x": {
+				{Repo: "cplieger/x", RunID: runID, Conclusion: "success", CreatedAt: fixedNow().Add(-1 * time.Hour)},
+			}},
+		}
+		return New(&Deps{
+			Client: fc, Logger: slog.New(slog.NewTextHandler(testWriter{t}, nil)),
+			Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath,
+		})
+	}
+
+	c1 := mk(1)
+	c2 := mk(2) // constructed before c1 saves: loads the same empty state
+	c1.Scan(context.Background())
+	c2.Scan(context.Background()) // must merge run 1 from disk, not overwrite it
+
+	c3 := mk(3) // fresh "process": reloads the merged set
+	if _, ok := c3.seen[1]; !ok {
+		t.Errorf("run 1 (saved by the first writer) was lost by the second writer's save")
+	}
+	if _, ok := c3.seen[2]; !ok {
+		t.Errorf("run 2 (saved by the second writer) must be in the merged set")
 	}
 }
 
@@ -732,10 +786,11 @@ func TestSnapshotsFilterForeignOwnerRepos(t *testing.T) {
 
 // TestSaveStateWriteFailureToleratedAndWarns exercises saveState's best-effort
 // contract: a write failure is logged once and never flips the scan unhealthy.
-// Making statePath's parent a regular file means atomicfile.WriteFile cannot
-// create its temp file there (ENOTDIR), which fails deterministically on every
-// OS including as root (a chmod-based approach would be bypassed by root in CI
-// containers).
+// Making statePath's parent a regular file means the slot file cannot be
+// opened there (ENOTDIR), which fails deterministically on every OS including
+// as root (a chmod-based approach would be bypassed by root in CI containers).
+// loadState warns separately at New (unreadable -> cold); this test pins only
+// the save-side warning.
 func TestSaveStateWriteFailureToleratedAndWarns(t *testing.T) {
 	notADir := filepath.Join(t.TempDir(), "not-a-dir")
 	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
