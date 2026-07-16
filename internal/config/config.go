@@ -15,7 +15,6 @@ package config
 import (
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -171,8 +170,8 @@ func parseExcludes(s string) map[string]bool {
 // over-max warning) is exercised by TestClampedIntWarnsOverMax, which
 // captures the slog output — so its boundary mutant is killable too.
 func clampedInt(key string, def, lo, hi int) int {
-	v, err := strconv.Atoi(strings.TrimSpace(os.Getenv(key)))
-	if err != nil || v < 0 {
+	v, ok, err := envx.IntStrict(key)
+	if err != nil || !ok || v < 0 {
 		return def
 	}
 	clamped := max(lo, min(v, hi))
