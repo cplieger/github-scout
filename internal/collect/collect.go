@@ -22,7 +22,11 @@
 // file (e.g. /tmp/seen-runs.json,
 // shared across `docker exec` triggers of the same running container) at the
 // end of each scan and reloaded at the next process start; a plain restart or
-// a fresh `trigger` then re-emits nothing. Leaving Deps.StatePath empty keeps
+// a fresh `trigger` then re-emits nothing. Persistence is a flock'd
+// single-slot read-modify-write transaction (scheduler.SlotFile) whose save
+// merges the on-disk set with the in-memory one, so concurrent writers (the
+// scheduled daemon racing an exec'd trigger) never lose each other's entries
+// to a last-writer-wins overwrite. Leaving Deps.StatePath empty keeps
 // the set in memory only (used in tests). Either way a cold start — the first
 // run, or a container recreate that clears /tmp — at worst re-emits runs still
 // inside the lookback window (the dashboard dedups run counts by run_id), so
@@ -33,19 +37,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io/fs"
 	"log/slog"
+	"maps"
 	"strings"
 	"time"
 
-	"github.com/cplieger/atomicfile/v2"
 	"github.com/cplieger/github-scout/internal/model"
+	"github.com/cplieger/scheduler/v2"
 )
-
-// maxStateBytes caps the dedup state file read. The set is bounded to the
-// lookback window (~hundreds–thousands of run IDs, tens of KB of JSON), so
-// 8 MiB is an ample guard against a corrupt/oversized file.
-const maxStateBytes = 8 << 20
 
 // Collector holds the cross-scan state: the GitHub client, scan
 // parameters, and the in-memory failed-run dedup set. Construct via New.
@@ -56,6 +55,7 @@ type Collector struct {
 	seen         map[int64]time.Time // run RunID -> CreatedAt, pruned to lookback
 	exclude      map[string]bool     // bare repo names to skip across all signals
 	csExclude    map[string]bool     // bare repo names to skip for code scanning only
+	slot         *scheduler.SlotFile // flock'd dedup-state slot at statePath (nil = in-memory only)
 	owner        string
 	prExclude    string // raw search qualifiers to filter PR noise (e.g. Renovate)
 	issueExclude string // raw search qualifiers to filter issue noise (Renovate, auto-generated)
@@ -85,7 +85,8 @@ type Deps struct {
 	PRExclude           string
 	IssueExclude        string
 	// StatePath, when non-empty, is where the run dedup set is persisted
-	// (atomic JSON) at the end of each scan and reloaded by New. Set it for
+	// (JSON in a flock'd scheduler.SlotFile, merged with any concurrent
+	// writer's entries) at the end of each scan and reloaded by New. Set it for
 	// trigger-mode deployments (each trigger is a fresh process) to a path
 	// shared across execs of the same container, e.g. /tmp/seen-runs.json.
 	// Production (main.go) sets it wherever a scan runs -- the scheduled
@@ -125,6 +126,7 @@ func New(d *Deps) *Collector {
 		lookback:     d.Lookback,
 	}
 	if c.statePath != "" {
+		c.slot = scheduler.NewSlotFile(c.statePath)
 		c.loadState()
 	}
 	return c
@@ -402,18 +404,22 @@ func (c *Collector) prune(cutoff time.Time) {
 	}
 }
 
-// loadState reads the persisted dedup set from statePath into c.seen. A
-// missing file is the normal cold start; an unreadable or corrupt file is
-// tolerated with a warning, since the only cost of a cold set is re-emitting
-// runs still inside the lookback window. Called by New only when statePath
-// is set.
+// loadState reads the persisted dedup set from the slot into c.seen. The
+// slot file is created empty on first use (the normal cold start); an
+// unreadable or corrupt file is tolerated with a warning, since the only cost
+// of a cold set is re-emitting runs still inside the lookback window. The
+// slot read is bounded (64 KiB), so an oversized file reads back truncated,
+// fails the JSON parse, and degrades to the same cold start. Called by New
+// only when statePath is set. Unmarshaling happens outside the flock; the
+// slot fn just returns its argument (the read idiom, no write).
 func (c *Collector) loadState() {
-	data, err := atomicfile.ReadBounded(context.Background(), c.statePath, maxStateBytes)
+	data, err := c.slot.Mutate(func(before []byte) []byte { return before })
 	if err != nil {
-		if !errors.Is(err, fs.ErrNotExist) {
-			c.logger.Warn("dedup state unreadable; starting cold", "path", c.statePath, "error", err)
-		}
+		c.logger.Warn("dedup state unreadable; starting cold", "path", c.statePath, "error", err)
 		return
+	}
+	if len(data) == 0 {
+		return // first use: the slot was just created empty
 	}
 	var seen map[int64]time.Time
 	if err := json.Unmarshal(data, &seen); err != nil {
@@ -425,21 +431,48 @@ func (c *Collector) loadState() {
 	}
 }
 
-// saveState atomically persists c.seen to statePath. Best-effort: a marshal
-// or write failure is logged but never fails the scan (the next trigger just
-// re-emits a few runs). Called at the end of Scan only when statePath is set,
-// after prune has bounded the set to the lookback window.
-// Uses context.Background() (not the scan ctx) deliberately: Scan still runs
-// saveState after a SIGTERM breaks the repo loop, and persisting the
-// just-emitted run IDs during shutdown stops the next trigger from re-emitting
-// them — threading the cancelled ctx would abort the atomicfile write.
+// saveState persists c.seen to the slot as one flock'd read-modify-write
+// transaction that UNIONS the on-disk set with the in-memory one, so a
+// concurrent writer's entries (the scheduled daemon racing an exec'd
+// `trigger`, or two overlapping triggers) are merged instead of overwritten,
+// closing the last-writer-wins lost update. Same-key entries carry
+// identical creation timestamps, so union order is irrelevant; stale
+// merged-in entries are re-pruned by the next scan's prune. Best-effort: a
+// marshal or write failure is logged but never fails the scan (the next
+// trigger just re-emits a few runs). Called at the end of Scan only when
+// statePath is set, after prune has bounded the set to the lookback window,
+// including after a SIGTERM breaks the repo loop, so the just-emitted run
+// IDs still land and the next trigger does not re-emit them.
 func (c *Collector) saveState() {
-	data, err := json.Marshal(c.seen)
-	if err != nil {
-		c.logger.Warn("dedup state marshal failed", "error", err)
+	var marshalErr error
+	if _, err := c.slot.Mutate(func(before []byte) []byte {
+		data, err := json.Marshal(mergeSeen(before, c.seen))
+		if err != nil {
+			marshalErr = err
+			return before // leave the slot untouched (the no-write idiom)
+		}
+		return data
+	}); err != nil {
+		c.logger.Warn("dedup state save failed", "path", c.statePath, "error", err)
 		return
 	}
-	if _, err := atomicfile.WriteFile(context.Background(), c.statePath, data, atomicfile.WithLogger(c.logger), atomicfile.WithNoSync()); err != nil {
-		c.logger.Warn("dedup state save failed", "path", c.statePath, "error", err)
+	if marshalErr != nil {
+		c.logger.Warn("dedup state marshal failed", "error", marshalErr)
 	}
+}
+
+// mergeSeen unions the persisted dedup set in before with the in-memory set.
+// Self-healing per the SlotFile contract: empty, torn, truncated, or garbage
+// bytes parse as an empty set rather than erroring, so a corrupt slot degrades
+// to "this process's view wins" instead of failing the save. Kept small
+// (parse, union, marshal on the caller side) because it runs under the flock.
+func mergeSeen(before []byte, seen map[int64]time.Time) map[int64]time.Time {
+	var persisted map[int64]time.Time
+	if len(before) > 0 {
+		_ = json.Unmarshal(before, &persisted) // self-heal: garbage -> empty
+	}
+	merged := make(map[int64]time.Time, len(persisted)+len(seen))
+	maps.Copy(merged, persisted)
+	maps.Copy(merged, seen)
+	return merged
 }

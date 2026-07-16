@@ -96,12 +96,17 @@ The four signals split into two shapes:
 
 github-scout keeps **no database**; history lives in Loki. The only cross-scan
 state is the event-once dedup set (run ID → creation time, bounded to the
-lookback window). It lives in memory during a run and is persisted (as an
-atomic JSON write) to a small file at `/tmp/seen-runs.json` at the end of each
-scan, then reloaded at process start, so a plain restart re-emits nothing. The
-scheduled daemon persists after every scan; under an external scheduler each
-`trigger` is a fresh process that reloads the previous one's set from the same
-file (`/tmp` is shared across `docker exec` triggers). In resident-idle mode the
+lookback window). It lives in memory during a run and is persisted (as JSON,
+through a flock'd single-slot read-modify-write transaction,
+`scheduler.SlotFile`) to a small file at `/tmp/seen-runs.json` at the end of
+each scan, then reloaded at process start, so a plain restart re-emits nothing.
+Each save merges the on-disk set with the in-memory one under the lock, so
+concurrent writers (the scheduled daemon racing an externally triggered scan,
+or two overlapping triggers) never lose each other's entries to a
+last-writer-wins overwrite. The scheduled daemon persists after every scan;
+under an external scheduler each `trigger` is a fresh process that reloads the
+previous one's set from the same file (`/tmp` is shared across `docker exec`
+triggers). In resident-idle mode the
 daemon itself never scans, so only its `trigger` execs persist. A cold start (the first run, or a container **recreate**
 that clears `/tmp`) at worst re-logs runs still inside the lookback window; the
 dashboard also dedups run counts by run ID, so counts stay correct either way.
@@ -483,7 +488,7 @@ version for reproducibility.
 | Distroless static   | [Distroless](https://github.com/GoogleContainerTools/distroless)               |
 | cplieger/httpx      | [httpx](https://github.com/cplieger/httpx), retry/backoff client               |
 | cplieger/health     | [health](https://github.com/cplieger/health), file-marker probe                |
-| cplieger/atomicfile | [atomicfile](https://github.com/cplieger/atomicfile), atomic state-file writes |
+| cplieger/scheduler  | [scheduler](https://github.com/cplieger/scheduler), poll loop, slot-file state |
 | pgregory.net/rapid  | [rapid](https://pkg.go.dev/pgregory.net/rapid), tests only                     |
 
 ## Credits
