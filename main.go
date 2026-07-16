@@ -40,7 +40,7 @@ import (
 	"github.com/cplieger/github-scout/internal/urlsafe"
 	"github.com/cplieger/health"
 	"github.com/cplieger/httpx/v2"
-	"github.com/cplieger/scheduler"
+	"github.com/cplieger/scheduler/v2"
 	"github.com/cplieger/slogx"
 )
 
