@@ -10,12 +10,17 @@
 // github.Client -> collect.Collector -> health.Marker. All logic lives in
 // internal/*; this file holds no business rules.
 //
-// Three run modes (matching the shared scheduled-app convention):
-//   - scheduled    (SCAN_INTERVAL > 0): an internal jittered timer.
-//   - resident-idle (SCAN_INTERVAL = off): no internal timer; sits healthy
-//     and idle, awaiting external `github-scout trigger` execs (Ofelia).
-//   - trigger      (`github-scout trigger`): one one-shot scan, then exit
-//     0/1 — the target for an Ofelia job-exec or cron.
+// Two run modes (the containerized daemon always self-schedules):
+//   - scheduled (the default, 15m): an internal jittered timer drives
+//     scans in the resident process. Because stdout of PID 1 IS the
+//     product transport (Alloy ships it to Loki under the container name),
+//     scan execution never leaves this process — there is no externally-
+//     scheduled container mode (a scan run via `docker exec` would write
+//     to the exec session, not the container stream, silently blinding
+//     the bundled dashboard and alerts).
+//   - trigger (`github-scout trigger`): one one-shot scan, then exit 0/1 —
+//     the dev loop (`go run . trigger`), cron on a bare host, CI. Here the
+//     invoking context's stdout is exactly where the output belongs.
 //
 // Output model is slog-to-stdout, not a /metrics endpoint: these signals
 // are high-cardinality events/records (run IDs, PR/issue numbers, URLs),
@@ -39,20 +44,21 @@ import (
 	"github.com/cplieger/github-scout/internal/github"
 	"github.com/cplieger/github-scout/internal/urlsafe"
 	"github.com/cplieger/health"
-	"github.com/cplieger/httpx/v2"
+	"github.com/cplieger/httpx/v3"
 	"github.com/cplieger/scheduler/v2"
 	"github.com/cplieger/slogx"
 )
 
-// seenStatePath persists the run dedup set across one-shot `trigger`
-// processes. It lives in /tmp alongside the health marker: /tmp is shared
-// across `docker exec` triggers of the same running container, so each
-// trigger reloads the previous one's set and re-emits nothing. A container
+// seenStatePath persists the run dedup set across process lifetimes. The
+// scheduled daemon saves after each scan, so a plain container restart
+// re-emits nothing; repeated one-shot `trigger` processes on the same host
+// (cron, the dev loop) reload each other's set the same way. A container
 // recreate clears /tmp, which at worst re-emits the lookback window once
-// (the documented cold-start behaviour). In scheduled mode the long-lived
-// process also persists here after each scan, so a plain restart no longer
-// re-emits either; in resident-idle mode the resident process never scans,
-// so cross-trigger persistence there is entirely via the trigger execs.
+// (the documented cold-start behaviour). Saves go through a flock'd
+// merge-on-save slot (scheduler.SlotFile), so even an out-of-contract
+// writer pair — someone hand-execing a `trigger` inside the scheduled
+// container, or two overlapping cron triggers — cannot lose entries to a
+// last-writer-wins overwrite.
 const seenStatePath = "/tmp/seen-runs.json"
 
 func main() {
@@ -67,7 +73,16 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "health":
-			health.RunProbe(health.DefaultPath)
+			// The probe arms a freshness deadline: the daemon refreshes the
+			// marker after every loop iteration, so a marker older than 3
+			// intervals means a wedged scan loop and a restart fixes it (the
+			// 40m GithubScoutScanStalled alert pages first at the deployed
+			// 15m interval; this restarts at 45m). This is the ONLY failure
+			// class a restart repairs — data outcomes (bad token, rate
+			// limit) live on the log channel, not the marker (see
+			// runScheduled).
+			health.RunProbe(health.DefaultPath,
+				health.WithMaxAge(3*config.ScanInterval()))
 		case "trigger":
 			runTrigger()
 		default:
@@ -89,51 +104,45 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Clear any stale marker from a previous crash; each run mode below sets
-	// its own boot health state (both modes report healthy on boot, so a slow
-	// first scan never gates startup health).
+	// The marker is pure LOOP LIVENESS: healthy on boot (a slow first scan
+	// never gates startup health), refreshed after every loop iteration
+	// regardless of the scan's outcome, and judged stale by the health
+	// probe's max-age when the loop wedges. Scan outcomes — a bad token, a
+	// rate limit, a blind signal — are deliberately NOT health: a restart
+	// cannot fix any of them (the loop already retries next tick), and a
+	// restart storm on a revoked token is noise. Those live on the log
+	// channel ("repo discovery failed", "scan degraded", the absence of
+	// "scan complete") where the bundled Loki rules page on them.
 	marker := health.NewMarker(health.DefaultPath)
 	marker.Set(false)
 	defer marker.Cleanup()
 
-	if cfg.ScanInterval == 0 {
-		// Resident-idle: no internal timer. Scans are driven externally by
-		// `github-scout trigger` (Ofelia job-exec). Healthy while idle; the
-		// trigger runs update the marker to reflect each scan's outcome.
-		marker.Set(true)
-		slog.Info("resident-idle mode", "reason", "SCAN_INTERVAL=off, awaiting external trigger")
-		<-ctx.Done()
-	} else {
-		// Scheduled: healthy on boot. The first scan runs as the scheduler
-		// loop's first iteration (immediately, not after a full interval), NOT
-		// inline here — so a slow first scan on a large account can't hold the
-		// container unhealthy past the healthcheck start-period. The marker
-		// thereafter reflects each completed scan's repo-discovery result.
-		collector, httpClient := buildCollector(&cfg)
-		defer httpx.Close(httpClient)
-		marker.Set(true)
-		slog.Info("scheduled mode", "interval", cfg.ScanInterval, "jitter", "±10%")
-		runScheduled(ctx, cfg.ScanInterval, collector, marker)
-	}
+	collector, httpClient := buildCollector(&cfg)
+	defer httpClient.CloseIdleConnections()
+	marker.Set(true)
+	slog.Info("scheduled mode", "interval", cfg.ScanInterval, "jitter", "±10%")
+	runScheduled(ctx, cfg.ScanInterval, collector, marker)
 
 	slog.Info("shutdown complete", "cause", context.Cause(ctx))
 }
 
-// runTrigger executes a single scan and exits — the target for external
-// schedulers (Ofelia job-exec, cron). os.Exit lives here, free of pending
-// defers; doTrigger holds the defers and returns the exit code.
+// runTrigger executes a single scan and exits — the dev loop, cron on a
+// bare host, CI. os.Exit lives here, free of pending defers; doTrigger
+// holds the defers and returns the exit code.
 func runTrigger() {
 	os.Exit(doTrigger())
 }
 
 // doTrigger loads config, runs one scan, and returns the process exit code
-// (0 healthy, 1 unhealthy / misconfigured). Each trigger is an independent
-// process, but the run dedup set is persisted to seenStatePath (in /tmp,
-// shared across `docker exec` triggers of the same running container), so a
-// trigger reloads the previous one's set and emits each completed run
-// exactly once — no re-emission across triggers. A container recreate clears
-// /tmp and at worst re-emits the lookback window once. Open PRs / issues /
-// alerts remain pure snapshots (re-emitted every scan by design).
+// (0 healthy, 1 unhealthy / misconfigured). The exit code and the process's
+// own stdout are the trigger's entire contract: it deliberately never
+// touches the /tmp/.healthy marker, which belongs to the scheduled daemon's
+// loop-liveness probe (a stray `docker exec … trigger` inside the scheduled
+// container must not be able to refresh — or clear — the daemon's liveness
+// signal). Repeated triggers still share the run dedup set at seenStatePath,
+// so each completed run is emitted exactly once across one-shot processes;
+// open PRs / issues / alerts remain pure snapshots (re-emitted every scan
+// by design).
 func doTrigger() int {
 	cfg, valid := loadConfig()
 	if !valid {
@@ -143,17 +152,10 @@ func doTrigger() int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// No marker.Cleanup here: in resident-idle deployments the main process
-	// owns /tmp/.healthy; this trigger runs as a separate `docker exec` and
-	// only updates the marker to reflect the run's outcome — deleting it
-	// would mark the resident container unhealthy.
-	marker := health.NewMarker(health.DefaultPath)
-
 	collector, httpClient := buildCollector(&cfg)
-	defer httpx.Close(httpClient)
+	defer httpClient.CloseIdleConnections()
 
 	ok := runScan(ctx, collector)
-	marker.Set(ok)
 	slog.Info("trigger scan complete", "healthy", ok)
 	if !ok {
 		return 1
@@ -180,8 +182,8 @@ func loadConfig() (config.Config, bool) {
 }
 
 // buildCollector wires config -> *http.Client -> github.Client ->
-// collect.Collector. Shared by the scheduled/resident main path and the
-// one-shot trigger path. The caller owns httpx.Close on the returned client.
+// collect.Collector. Shared by the scheduled daemon path and the one-shot
+// trigger path. The caller owns CloseIdleConnections on the returned client.
 func buildCollector(cfg *config.Config) (*collect.Collector, *http.Client) {
 	httpClient := httpx.NewClient(30 * time.Second)
 	gh := github.NewClient(httpClient, cfg.Token, nil, slog.Default())
@@ -214,12 +216,19 @@ func runScan(ctx context.Context, collector *collect.Collector) (healthy bool) {
 // runScheduled scans on each tick of a ScanInterval timer with ±10% jitter
 // until ctx is cancelled, via scheduler.RunLoop. Jitter avoids a predictable,
 // synchronized hammer on the GitHub API across restarts. FireOnStart runs the
-// first scan immediately on boot (not after a full interval); boot health is
-// set healthy by the caller, so this loop only ever updates the marker from a
-// completed scan's repo-discovery result and never gates startup health.
+// first scan immediately on boot (not after a full interval).
+//
+// The marker refresh is unconditional: it asserts "the scan loop completed
+// an iteration", not "the scan found the data healthy". A failing scan
+// (bad token, rate limit, blind signal) refreshes it too — the loop is
+// alive and will retry next tick, which is everything a restart could
+// achieve; the failure itself is already on the log channel where the
+// bundled alerts consume it. Only a wedged loop stops refreshing, and the
+// health probe's max-age converts that staleness into a restart.
 func runScheduled(ctx context.Context, interval time.Duration, collector *collect.Collector, marker *health.Marker) {
 	scheduler.RunLoop(ctx, func(ctx context.Context) {
-		marker.Set(runScan(ctx, collector))
+		runScan(ctx, collector)
+		marker.Set(true)
 	}, scheduler.LoopOptions{Interval: interval, FireOnStart: true, Jitter: 0.10})
 }
 
@@ -244,14 +253,10 @@ func setupLogging(level slog.Level) {
 // logConfig logs the active configuration at startup. The token is never
 // logged — only whether one is present.
 func logConfig(cfg *config.Config) {
-	mode := "resident-idle"
-	if cfg.ScanInterval > 0 {
-		mode = cfg.ScanInterval.String()
-	}
 	slog.Info("configuration loaded",
 		"owner", cfg.Owner,
 		"token_set", cfg.Token != "",
-		"scan_interval", mode,
+		"scan_interval", cfg.ScanInterval.String(),
 		"lookback", cfg.Lookback,
 		"excluded_repos", len(cfg.ExcludeRepos),
 		"code_scanning_excluded_repos", len(cfg.CodeScanningExcludeRepos))

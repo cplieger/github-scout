@@ -17,15 +17,14 @@
 //
 // The only cross-scan state is the run dedup set. Production (main.go) sets
 // Deps.StatePath wherever a scan runs -- the scheduled daemon and every
-// `trigger` exec (in resident-idle mode the resident daemon never scans, so
-// only the trigger execs persist) -- so the set is persisted to a small JSON
-// file (e.g. /tmp/seen-runs.json,
-// shared across `docker exec` triggers of the same running container) at the
+// one-shot `trigger` process -- so the set is persisted to a small JSON
+// file (e.g. /tmp/seen-runs.json) at the
 // end of each scan and reloaded at the next process start; a plain restart or
 // a fresh `trigger` then re-emits nothing. Persistence is a flock'd
 // single-slot read-modify-write transaction (scheduler.SlotFile) whose save
-// merges the on-disk set with the in-memory one, so concurrent writers (the
-// scheduled daemon racing an exec'd trigger) never lose each other's entries
+// merges the on-disk set with the in-memory one, so even an out-of-contract
+// concurrent writer pair (a trigger hand-exec'd inside the scheduled
+// container, or two overlapping cron triggers) never loses entries
 // to a last-writer-wins overwrite. Leaving Deps.StatePath empty keeps
 // the set in memory only (used in tests). Either way a cold start — the first
 // run, or a container recreate that clears /tmp — at worst re-emits runs still
@@ -86,14 +85,11 @@ type Deps struct {
 	IssueExclude        string
 	// StatePath, when non-empty, is where the run dedup set is persisted
 	// (JSON in a flock'd scheduler.SlotFile, merged with any concurrent
-	// writer's entries) at the end of each scan and reloaded by New. Set it for
-	// trigger-mode deployments (each trigger is a fresh process) to a path
-	// shared across execs of the same container, e.g. /tmp/seen-runs.json.
+	// writer's entries) at the end of each scan and reloaded by New.
 	// Production (main.go) sets it wherever a scan runs -- the scheduled
-	// daemon and every `trigger` exec (in resident-idle mode the resident
-	// daemon never scans, so only the trigger execs persist). The dedup set
-	// therefore survives a plain restart and each completed run is emitted
-	// once regardless of process lifetime.
+	// daemon and every one-shot `trigger` process -- so the dedup set
+	// survives a plain restart and each completed run is emitted once
+	// regardless of process lifetime.
 	// Leave empty only for in-memory-only dedup (used in tests).
 	StatePath string
 	Lookback  time.Duration

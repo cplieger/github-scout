@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/cplieger/github-scout/internal/model"
-	"github.com/cplieger/httpx/v2"
+	"github.com/cplieger/httpx/v3"
 )
 
 // newTestClient wires a Client at the test server's URL with a short-timeout
@@ -374,7 +374,7 @@ func TestStatus429MapsRateLimited(t *testing.T) {
 
 	// One attempt only: a 429 is retryable, and the test only needs to observe
 	// the post-exhaustion mapping, not sit through backoff.
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default())
+	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.GetOption{httpx.WithMaxAttempts(1)}, slog.Default())
 	c.baseURL = srv.URL
 
 	_, err := c.ListRepos(context.Background(), "cplieger")
@@ -657,7 +657,7 @@ func TestListRunsReturnsPartialOnMidPaginationError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default())
+	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.GetOption{httpx.WithMaxAttempts(1)}, slog.Default())
 	c.baseURL = srv.URL
 
 	runs, err := c.ListRuns(context.Background(), model.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
@@ -690,7 +690,7 @@ func TestGetJSON_routes_retry_logs_to_client_logger(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	c := NewClient(httpx.NewClient(5*time.Second), "tok",
-		[]httpx.Option{httpx.WithBaseDelay(time.Millisecond)}, logger)
+		[]httpx.GetOption{httpx.WithBaseDelay(time.Millisecond)}, logger)
 	c.baseURL = srv.URL
 
 	if _, err := c.ListRepos(context.Background(), "cplieger"); err != nil {

@@ -5,11 +5,14 @@
 // contract — the in-memory shape may evolve, but the names and parsing
 // semantics must stay stable.
 //
-// SCAN_INTERVAL follows the shared scheduled-app convention (DUMP_INTERVAL,
-// SCHEDULE_INTERVAL, SYNC_INTERVAL, …): a Go duration string, with the
-// sentinels off / disabled / 0 / 0s selecting resident-idle mode (no
-// internal timer; scans are driven externally by `github-scout trigger`,
-// e.g. an Ofelia job-exec).
+// SCAN_INTERVAL is a Go duration string (the shared *_INTERVAL naming
+// convention: DUMP_INTERVAL, SCHEDULE_INTERVAL, SYNC_INTERVAL, …). This app
+// deliberately has NO external-scheduling mode — its stdout is the product,
+// and a scan executed by an external `docker exec` can never reach the
+// container's log stream — so the fleet sentinels (off / disabled / 0) that
+// select external mode elsewhere are simply invalid input here: they warn
+// and fall back to the default cadence, exactly like any other unparseable
+// value. One-shot scans are the `trigger` subcommand's job.
 package config
 
 import (
@@ -78,9 +81,9 @@ type Config struct {
 	// IssueExclude is appended to the open-issue search query to filter
 	// bot / auto-generated noise.
 	IssueExclude string
-	// ScanInterval is the gap between scans in scheduled mode. Zero selects
-	// resident-idle mode: no internal timer, scans driven externally by the
-	// `trigger` subcommand (Ofelia job-exec). Parsed from SCAN_INTERVAL.
+	// ScanInterval is the gap between scans; always positive (invalid input,
+	// including the fleet's external-scheduling sentinels this app does not
+	// support, falls back to DefaultScanInterval). Parsed from SCAN_INTERVAL.
 	ScanInterval time.Duration
 	// Lookback is how far back each scan considers runs.
 	Lookback time.Duration
@@ -103,26 +106,39 @@ func Load() Config {
 		CodeScanningExcludeRepos: parseExcludes(os.Getenv("CODE_SCANNING_EXCLUDE_REPOS")),
 		PRExclude:                envx.String("PR_EXCLUDE_QUERY", DefaultPRExclude),
 		IssueExclude:             envx.String("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
-		ScanInterval:             parseScanInterval(os.Getenv("SCAN_INTERVAL")),
+		ScanInterval:             ScanInterval(),
 		Lookback:                 time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
 		LogLevel:                 lvl,
 	}
 }
 
+// ScanInterval returns the effective SCAN_INTERVAL, parsed and clamped with
+// the same rules Load applies; it is always positive, so the health probe's
+// freshness deadline is always armed. Exported separately so the health
+// subcommand can derive its probe max-age from the same source of truth
+// without a full config load.
+func ScanInterval() time.Duration {
+	return parseScanInterval(os.Getenv("SCAN_INTERVAL"))
+}
+
 // parseScanInterval parses SCAN_INTERVAL into the gap between scans. It
 // delegates to scheduler.ParseInterval (with WithBounds clamping a built-in
 // cadence to [minScanInterval, maxScanInterval]): a Go duration (e.g. "15m",
-// "1h30m") runs built-in; the sentinels off / disabled / 0 / 0s select
-// resident-idle mode (return 0: no internal timer, scans driven by the
-// `trigger` subcommand); an unset value uses the default; and an invalid or
+// "1h30m") runs built-in; an unset value uses the default; and an invalid or
 // negative value warns and falls back to the default so a typo degrades to
-// "still scanning" rather than silent idle.
+// "still scanning" rather than silence. The fleet's external-scheduling
+// sentinels (off / disabled / 0) get that same invalid-input treatment:
+// this app has no external mode (stdout is the product; scans never run
+// outside the daemon), so a sentinel is just another value that doesn't
+// parse to a usable cadence.
 func parseScanInterval(raw string) time.Duration {
 	s := scheduler.ParseInterval(raw, DefaultScanInterval,
 		scheduler.WithBounds(minScanInterval, maxScanInterval),
 		scheduler.WithName("SCAN_INTERVAL"))
 	if s.Mode == scheduler.ModeExternal {
-		return 0
+		slog.Warn("invalid SCAN_INTERVAL, using default",
+			"value", raw, "default", DefaultScanInterval.String())
+		return DefaultScanInterval
 	}
 	return s.Interval
 }

@@ -28,6 +28,8 @@ import (
 	"errors"
 	"slices"
 	"time"
+
+	"github.com/cplieger/runesafe"
 )
 
 // ErrNoCodeScanning marks a repo that has no code-scanning analyses — GitHub
@@ -80,13 +82,16 @@ func (r Repo) FullName() string { return r.Owner + "/" + r.Name }
 // panel. Each failed run is a build / release / scheduled job that needs a
 // human to look at it.
 type WorkflowRun struct {
-	CreatedAt  time.Time `json:"created_at"`
-	Repo       string    `json:"repo"`
-	Workflow   string    `json:"workflow"`
-	Branch     string    `json:"branch"`
-	Event      string    `json:"event"`
-	Conclusion string    `json:"conclusion"`
-	URL        string    `json:"url"`
+	CreatedAt time.Time `json:"created_at"`
+	Repo      string    `json:"repo"`
+	Workflow  string    `json:"workflow"`
+	// Branch is user-authored text (fork PR branch names arrive verbatim), so
+	// it is tagged runesafe.Untrusted: raw in, sanitized automatically at
+	// every slog/fmt/encoder sink.
+	Branch     runesafe.Untrusted `json:"branch"`
+	Event      string             `json:"event"`
+	Conclusion string             `json:"conclusion"`
+	URL        string             `json:"url"`
 	// RunID is GitHub's globally-unique run identifier and the dedup key.
 	RunID     int64 `json:"run_id"`
 	RunNumber int64 `json:"run_number"`
@@ -97,9 +102,11 @@ type WorkflowRun struct {
 type PullRequest struct {
 	CreatedAt time.Time `json:"created_at"`
 	Repo      string    `json:"repo"`
-	Title     string    `json:"title"`
-	Author    string    `json:"author"`
-	URL       string    `json:"url"`
+	// Title is untrusted upstream text (any PR author controls it); the
+	// runesafe.Untrusted tag sanitizes it at every emit automatically.
+	Title  runesafe.Untrusted `json:"title"`
+	Author string             `json:"author"`
+	URL    string             `json:"url"`
 	// Number is the PR number, unique within its repo (dedup key is
 	// repo+number).
 	Number int64 `json:"number"`
@@ -114,11 +121,13 @@ type PullRequest struct {
 type Issue struct {
 	CreatedAt time.Time `json:"created_at"`
 	Repo      string    `json:"repo"`
-	Title     string    `json:"title"`
-	Author    string    `json:"author"`
-	Labels    string    `json:"labels"` // comma-joined for flat log rendering
-	URL       string    `json:"url"`
-	Number    int64     `json:"number"`
+	// Title is untrusted upstream text (any issue author controls it); the
+	// runesafe.Untrusted tag sanitizes it at every emit automatically.
+	Title  runesafe.Untrusted `json:"title"`
+	Author string             `json:"author"`
+	Labels string             `json:"labels"` // comma-joined for flat log rendering
+	URL    string             `json:"url"`
+	Number int64              `json:"number"`
 }
 
 // CodeScanningAlert is an open CodeQL / code-scanning alert — a snapshot
