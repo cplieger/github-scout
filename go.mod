@@ -11,6 +11,6 @@ require (
 	github.com/cplieger/scheduler/v2 v2.0.0
 )
 
-require github.com/cplieger/httpx/v3 v3.0.0
+require github.com/cplieger/httpx/v3 v3.1.1
 
 require github.com/cplieger/runesafe v1.1.0
