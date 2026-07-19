@@ -70,12 +70,23 @@ func TestLoadParsesValues(t *testing.T) {
 	}
 }
 
-func TestScanIntervalSentinelsAreResidentIdle(t *testing.T) {
+// TestScanIntervalSentinelsFallBackToDefault pins the no-external-mode
+// contract: the fleet's external-scheduling sentinels (off / disabled / 0)
+// are not valid values for this app — its stdout is the product, so scans
+// never run outside the daemon — and they get the standard invalid-input
+// treatment: exactly one warning, default cadence. No zero ever escapes
+// config, so the daemon needs no interval guard and the health probe's
+// freshness deadline is always armed.
+func TestScanIntervalSentinelsFallBackToDefault(t *testing.T) {
 	for _, v := range []string{"off", "disabled", "0", "0s", "OFF"} {
 		t.Run(v, func(t *testing.T) {
+			rec := captureDefaultSlog(t)
 			t.Setenv("SCAN_INTERVAL", v)
-			if got := Load().ScanInterval; got != 0 {
-				t.Errorf("SCAN_INTERVAL=%q ScanInterval = %v, want 0 (resident-idle)", v, got)
+			if got := Load().ScanInterval; got != DefaultScanInterval {
+				t.Errorf("SCAN_INTERVAL=%q ScanInterval = %v, want default %v", v, got, DefaultScanInterval)
+			}
+			if n := rec.CountExact("invalid SCAN_INTERVAL, using default"); n != 1 {
+				t.Errorf("SCAN_INTERVAL=%q warned %d times, want exactly 1", v, n)
 			}
 		})
 	}

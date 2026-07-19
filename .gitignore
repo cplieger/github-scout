@@ -7,3 +7,7 @@
 # Local env file for compose interpolation (keeps GITHUB_TOKEN/GITHUB_OWNER out of git)
 .env
 *.env
+
+# Go workspace
+go.work
+go.work.sum

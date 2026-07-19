@@ -100,17 +100,16 @@ lookback window). It lives in memory during a run and is persisted (as JSON,
 through a flock'd single-slot read-modify-write transaction,
 `scheduler.SlotFile`) to a small file at `/tmp/seen-runs.json` at the end of
 each scan, then reloaded at process start, so a plain restart re-emits nothing.
-Each save merges the on-disk set with the in-memory one under the lock, so
-concurrent writers (the scheduled daemon racing an externally triggered scan,
-or two overlapping triggers) never lose each other's entries to a
-last-writer-wins overwrite. The scheduled daemon persists after every scan;
-under an external scheduler each `trigger` is a fresh process that reloads the
-previous one's set from the same file (`/tmp` is shared across `docker exec`
-triggers). In resident-idle mode the
-daemon itself never scans, so only its `trigger` execs persist. A cold start (the first run, or a container **recreate**
-that clears `/tmp`) at worst re-logs runs still inside the lookback window; the
-dashboard also dedups run counts by run ID, so counts stay correct either way.
-Persistence is a best-effort optimisation, never a correctness dependency.
+The scheduled daemon persists after every scan; repeated one-shot `trigger`
+processes on the same host (cron, the dev loop) reload each other's set from
+the same file. Each save merges the on-disk set with the in-memory one under
+the lock, so even an out-of-contract concurrent writer pair (a `trigger`
+hand-exec'd inside the scheduled container, or two overlapping cron triggers)
+never loses entries to a last-writer-wins overwrite. A cold start (the first
+run, or a container **recreate** that clears `/tmp`) at worst re-logs runs
+still inside the lookback window; the dashboard also dedups run counts by run
+ID, so counts stay correct either way. Persistence is a best-effort
+optimisation, never a correctness dependency.
 
 ### Architecture
 
@@ -150,7 +149,7 @@ services:
     environment:
       GITHUB_OWNER: "your-login"        # user or org whose repos to scan
       GITHUB_TOKEN: "ghp_xxx"            # see token scopes below
-      SCAN_INTERVAL: "15m"               # Go duration between scans; "off" = resident-idle
+      SCAN_INTERVAL: "15m"               # Go duration between scans (always self-scheduled)
       LOOKBACK_HOURS: "72"               # how far back to consider failed runs
       EXCLUDE_REPOS: ""                  # comma-separated bare repo names to skip (all signals)
       CODE_SCANNING_EXCLUDE_REPOS: ""    # skip code scanning only (e.g. private repos without GHAS)
@@ -180,11 +179,15 @@ works, and both keep discovery dynamic (new repos auto-included):
   the repo listing. Avoid "Only select repositories": it freezes the set, so new
   repos silently stop being scanned.
 
-github-scout degrades gracefully if a permission is missing: a repo without code
-scanning (or a token lacking that permission) simply yields no alerts rather than
-failing the scan. A private repo on a plan without GitHub Advanced Security always
-returns 403 on code scanning; list it in `CODE_SCANNING_EXCLUDE_REPOS` to skip
-just that signal (its runs, PRs, and issues keep scanning). The token is only ever
+github-scout distinguishes "no data" from "couldn't check". A repo that has never
+run code scanning returns 404 and simply yields no alerts; that is a benign
+no-data outcome and the scan stays healthy. A token lacking the code-scanning
+permission returns 403, which is surfaced as a warning and marks the scan
+degraded instead of being silently read as zero alerts (a couldn't-check zero is
+never presented as a confirmed-clean zero). A private repo on a plan without
+GitHub Advanced Security always returns 403 on code scanning; list it in
+`CODE_SCANNING_EXCLUDE_REPOS` to skip just that signal (its runs, PRs, and
+issues keep scanning). The token is only ever
 sent to `api.github.com` as a Bearer header and is never logged (only its presence
 is logged at startup).
 
@@ -194,7 +197,7 @@ is logged at startup).
 | ----------------------------- | ---------------------------------------------------------------------------- | -------------- | -------- |
 | `GITHUB_OWNER`                | GitHub login (user or org) whose repositories are scanned                    | ``             | Yes      |
 | `GITHUB_TOKEN`                | Personal access token (see scopes above)                                     | ``             | Yes      |
-| `SCAN_INTERVAL`               | Gap between scans, a Go duration (`15m`, `1h`). `off` = resident-idle        | `15m`          | No       |
+| `SCAN_INTERVAL`               | Gap between scans, a Go duration (`15m`, `1h`). No disable value             | `15m`          | No       |
 | `LOOKBACK_HOURS`              | How far back each scan considers failed runs (also bounds the dedup set)     | `72`           | No       |
 | `EXCLUDE_REPOS`               | Comma-separated **bare** repo names to skip (silences all signals)           | ``             | No       |
 | `CODE_SCANNING_EXCLUDE_REPOS` | Comma-separated bare repo names to skip for code scanning only (others kept) | ``             | No       |
@@ -202,19 +205,26 @@ is logged at startup).
 
 Out-of-range or unparseable values fall back to the default (a bad
 `SCAN_INTERVAL` keeps scanning at 15m; an out-of-range `LOOKBACK_HOURS` is
-clamped), so misconfiguration degrades safely rather than crashing.
+clamped), so misconfiguration degrades safely rather than crashing. There is
+no value that disables scanning: `off` / `disabled` / `0` are invalid here
+and fall back to the default like anything else unparseable. For on-demand
+scans, use the `trigger` subcommand.
 
 ### Run modes
 
-You choose an internal timer or an external scheduler:
-
 - **Scheduled** (`SCAN_INTERVAL=15m`, the default): an internal jittered timer
-  drives the scans. Failed runs are deduplicated in memory and emitted once.
-- **Resident-idle** (`SCAN_INTERVAL=off`): no internal timer. The container
-  sits healthy and idle while an external scheduler runs `github-scout trigger`
-  on its own cadence, e.g. an Ofelia `job-exec`.
-- **Trigger** (`github-scout trigger`): one scan, then exit 0/1; the target
-  for that external scheduler, or a manual one-shot run.
+  drives the scans in the resident process. Failed runs are deduplicated in
+  memory and emitted once.
+- **Trigger** (`github-scout trigger`): one scan, then exit 0/1 — the dev
+  loop (`go run . trigger`), cron on a bare host, CI. Its output goes to the
+  invoking context's stdout, exactly where a one-shot's output belongs.
+
+There is no externally-scheduled container mode. github-scout's stdout **is**
+the product: the dashboard, the alert rules, and every query in this README
+consume the container's main-process log stream. A scan executed inside the
+container by an external scheduler (`docker exec … trigger`) writes to the
+exec session instead, so every signal it collects is invisible to all of
+them. In a container, the internal timer is the scheduler.
 
 Each `trigger` is an independent process, but the run dedup set persists across
 triggers so each completed run is emitted exactly once (see _State_ above for the
@@ -380,28 +390,31 @@ them if you lengthen `SCAN_INTERVAL`; adjust the `container` selector (or `job`
 / `service`, depending on your log collector) to your deployment, and route by
 whatever labels your Alertmanager uses.
 
-These rules assume built-in scheduling (`SCAN_INTERVAL` set to a duration),
-where the scan runs as PID 1 and its logs reach your collector. Under
-`SCAN_INTERVAL=off` each `github-scout trigger` is a `docker exec` child whose
-output goes to the trigger, not the container's log stream, so neither rule
-fires; alert on your external scheduler's own job result instead.
+In a container the scan always runs as PID 1 (see _Run modes_), so these rules
+apply to every containerized deployment as-is. If you instead run one-shot
+`trigger` scans on a bare host (cron), the output lands in your scheduler's
+stream rather than a `github-scout` container stream — point the selectors
+there, and alert on the job's exit code for scan failures.
 
 ## Healthcheck
 
-A marker file at `/tmp/.healthy` is written after each scan whose repo discovery
-succeeded, and cleared otherwise. The `health` subcommand
-(`/github-scout health`) checks the marker and exits non-zero when unhealthy;
-this is the container's `HEALTHCHECK`, so no HTTP port or shell is needed on the
-distroless image. In scheduled mode the container starts healthy on boot; the
-first scan runs in the background (as the scheduler loop's first iteration), so a
-slow first scan on a large account cannot hold the container unhealthy past the
-`HEALTHCHECK` start-period, and the marker thereafter reflects each completed
-scan's repo-discovery outcome. In resident-idle mode
-(`SCAN_INTERVAL=off`) it reports healthy as soon as it is up and idle
-(liveness); each external `trigger` exec then updates the marker to reflect that
-scan's outcome. Per-repo run-list failures are tolerated (logged; the
-scan stays healthy); only a repo-discovery failure (bad token, rate limit) marks
-the container unhealthy.
+A marker file at `/tmp/.healthy` is the scan loop's **liveness** signal. The
+daemon marks it healthy on boot (so a slow first scan on a large account never
+holds the container unhealthy past the `HEALTHCHECK` start-period) and
+refreshes it after every loop iteration, regardless of the scan's outcome. The
+`health` subcommand (`/github-scout health`) exits non-zero when the marker is
+missing or older than three scan intervals; this is the container's
+`HEALTHCHECK`, so no HTTP port or shell is needed on the distroless image.
+
+A wedged scan loop stops refreshing the marker and gets restarted by that
+staleness deadline — the only failure class a restart repairs, so the only one
+health reports. Scan _outcomes_ (a bad token, a rate limit, a blind signal)
+never flip container health: the loop retries at the next tick anyway, which
+is everything a restart could achieve, and a restart storm on a revoked token
+is operational noise. Those are reported on the log channel instead — `repo
+discovery failed`, `scan degraded`, and the absence of `scan complete` — which
+the bundled alert rules page on. The one-shot `trigger` never touches the
+marker; its contract is its exit code and its own stdout.
 
 ## Security
 

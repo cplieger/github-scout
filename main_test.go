@@ -111,9 +111,17 @@ func TestRunScheduled_firstScanRunsImmediatelyAndSetsMarker(t *testing.T) {
 	}
 }
 
-func TestRunScheduled_failedScanMarksUnhealthy(t *testing.T) {
+// TestRunScheduled_failingScanStillRefreshesLiveness pins the marker's
+// loop-liveness semantics: a FAILING scan (here: a panicking collector,
+// recovered by runScan) still refreshes the marker, because the marker
+// asserts "the loop completed an iteration", not "the data is healthy".
+// A bad token or rate limit must not flap container health — the loop
+// retries next tick, and the failure is reported on the log channel.
+// Only a wedged loop (no refresh at all) goes stale past the probe's
+// max-age. Guards the unconditional marker.Set(true) in runScheduled.
+func TestRunScheduled_failingScanStillRefreshesLiveness(t *testing.T) {
 	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
-	marker.Set(true)
+	marker.Set(false)
 	collector := collect.New(&collect.Deps{
 		Client: panicClient{},
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
@@ -126,11 +134,11 @@ func TestRunScheduled_failedScanMarksUnhealthy(t *testing.T) {
 		runScheduled(ctx, time.Hour, collector, marker)
 	}()
 	deadline := time.Now().Add(2 * time.Second)
-	for marker.Healthy() {
+	for !marker.Healthy() {
 		if time.Now().After(deadline) {
 			cancel()
 			<-done
-			t.Fatal("runScheduled did not flip the marker to unhealthy after a failing first scan")
+			t.Fatal("runScheduled did not refresh the liveness marker after a failing scan; liveness must not depend on scan outcome")
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

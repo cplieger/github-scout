@@ -27,7 +27,8 @@ import (
 
 	"github.com/cplieger/github-scout/internal/model"
 	"github.com/cplieger/github-scout/internal/urlsafe"
-	"github.com/cplieger/httpx/v2"
+	"github.com/cplieger/httpx/v3"
+	"github.com/cplieger/runesafe"
 )
 
 const (
@@ -58,13 +59,13 @@ type Client struct {
 	logger    *slog.Logger
 	token     string
 	baseURL   string
-	retryOpts []httpx.Option
+	retryOpts []httpx.GetOption
 }
 
 // NewClient returns a Client using the provided *http.Client for all
 // requests, authenticating with token, and applying retryOpts to each
 // call. A nil logger falls back to slog.Default.
-func NewClient(client *http.Client, token string, retryOpts []httpx.Option, logger *slog.Logger) *Client {
+func NewClient(client *http.Client, token string, retryOpts []httpx.GetOption, logger *slog.Logger) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -116,9 +117,15 @@ func (c *Client) ListRepos(ctx context.Context, owner string) ([]model.Repo, err
 			})
 		}
 		if len(pageRepos) < perPage {
-			break // last page
+			return repos, nil // last page
 		}
 	}
+	// maxPages exhausted with a full final page: more repos may exist beyond
+	// the pagination bound. The bound itself is deliberate (see maxPages),
+	// but an owner with >500 visible repos must not be silently under-scanned,
+	// so surface the possible truncation instead of returning quietly.
+	c.logger.Warn("repo listing hit pagination bound; scan universe may be truncated",
+		"owner", owner, "page_cap", maxPages, "repo_cap", maxPages*perPage)
 	return repos, nil
 }
 
@@ -129,14 +136,16 @@ type apiRunsPage struct {
 
 // apiRun is the subset of a workflow run github-scout surfaces.
 type apiRun struct {
-	CreatedAt  time.Time `json:"created_at"`
-	Name       string    `json:"name"`
-	HeadBranch string    `json:"head_branch"`
-	Event      string    `json:"event"`
-	Conclusion string    `json:"conclusion"`
-	HTMLURL    string    `json:"html_url"`
-	ID         int64     `json:"id"`
-	RunNumber  int64     `json:"run_number"`
+	CreatedAt time.Time `json:"created_at"`
+	Name      string    `json:"name"`
+	// HeadBranch is tagged at the decode boundary: fork PR branch names are
+	// user-authored text, so the provenance travels with the value.
+	HeadBranch runesafe.Untrusted `json:"head_branch"`
+	Event      string             `json:"event"`
+	Conclusion string             `json:"conclusion"`
+	HTMLURL    string             `json:"html_url"`
+	ID         int64              `json:"id"`
+	RunNumber  int64              `json:"run_number"`
 }
 
 // ListRuns returns all completed workflow runs for repo created at or after
@@ -192,7 +201,7 @@ func (c *Client) ListRuns(ctx context.Context, repo model.Repo, since time.Time)
 // transport and decodes the body into out. The body is capped so a
 // runaway response can't exhaust memory.
 func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
-	opts := make([]httpx.Option, 0, len(c.retryOpts)+3)
+	opts := make([]httpx.GetOption, 0, len(c.retryOpts)+3)
 	opts = append(opts, c.retryOpts...)
 	opts = append(opts,
 		httpx.WithHeaders(func(req *http.Request) {
@@ -206,7 +215,7 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 		// app's configured (JSON) handler and are injectable in tests.
 		httpx.WithLogger(c.logger),
 	)
-	body, err := httpx.Retry(ctx, c.http, reqURL, opts...)
+	body, err := httpx.GetBytes(ctx, c.http, reqURL, opts...)
 	if err != nil {
 		return mapStatusError(err)
 	}
@@ -216,7 +225,7 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 	return nil
 }
 
-// mapStatusError translates the SYSTEMIC transport failures httpx.Retry can
+// mapStatusError translates the SYSTEMIC transport failures httpx.GetBytes can
 // return into the domain sentinels the collector escalates on, so
 // internal/collect classifies on meaning and never imports httpx. A 401
 // (rejected token) and a 429 (rate limit) are org-wide — they poison every
@@ -251,10 +260,12 @@ type apiSearchResp struct {
 // apiSearchItem is one search result. The endpoint returns both issues and
 // pull requests; the `is:pr` / `is:issue` query qualifier selects which.
 type apiSearchItem struct {
-	CreatedAt     time.Time `json:"created_at"`
-	Title         string    `json:"title"`
-	HTMLURL       string    `json:"html_url"`
-	RepositoryURL string    `json:"repository_url"`
+	CreatedAt time.Time `json:"created_at"`
+	// Title is tagged at the decode boundary: PR/issue titles are authored
+	// by anyone, so the provenance travels with the value.
+	Title         runesafe.Untrusted `json:"title"`
+	HTMLURL       string             `json:"html_url"`
+	RepositoryURL string             `json:"repository_url"`
 	User          struct {
 		Login string `json:"login"`
 	} `json:"user"`
@@ -352,9 +363,14 @@ func (c *Client) search(ctx context.Context, base, owner, exclude string) ([]api
 				" (search timed out)", base, page)
 		}
 		if len(resp.Items) < perPage {
-			break
+			return items, nil // last page
 		}
 	}
+	// maxPages exhausted with a full final page: the open set may extend past
+	// the pagination bound, so this snapshot could be partial. Surface it
+	// rather than presenting a truncated snapshot as complete.
+	c.logger.Warn("search hit pagination bound; snapshot may be truncated",
+		"query", base, "page_cap", maxPages, "item_cap", maxPages*perPage)
 	return items, nil
 }
 
@@ -385,7 +401,9 @@ type apiCodeAlert struct {
 // reporting zero alerts would hide a security signal. The collector treats a
 // per-repo 403 as a degraded read and escalates only when code scanning is
 // blind for EVERY repo that has it; silence an expected, persistent 403 (a
-// private repo without GHAS) via EXCLUDE_REPOS.
+// private repo without GHAS) via CODE_SCANNING_EXCLUDE_REPOS, which skips
+// only that repo's code-scanning read (EXCLUDE_REPOS would drop the repo
+// from every signal).
 func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([]model.CodeScanningAlert, error) {
 	if !urlsafe.IsSafeURLSegment(repo.Owner) || !urlsafe.IsSafeURLSegment(repo.Name) {
 		return nil, fmt.Errorf("unsafe repo segment: %q", repo.FullName())
