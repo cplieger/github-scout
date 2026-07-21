@@ -57,19 +57,27 @@ const (
 type Client struct {
 	http      *http.Client
 	logger    *slog.Logger
+	cache     *condCache
 	token     string
 	baseURL   string
-	retryOpts []httpx.GetOption
+	retryOpts []httpx.Option
 }
 
 // NewClient returns a Client using the provided *http.Client for all
 // requests, authenticating with token, and applying retryOpts to each
-// call. A nil logger falls back to slog.Default.
-func NewClient(client *http.Client, token string, retryOpts []httpx.GetOption, logger *slog.Logger) *Client {
+// call. A nil logger falls back to slog.Default. condCachePath, when
+// non-empty, persists the conditional-request cache (per-URL validators +
+// the item subset they validate) across processes; empty keeps it
+// in-memory only (tests).
+func NewClient(client *http.Client, token string, retryOpts []httpx.Option, logger *slog.Logger, condCachePath string) *Client {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Client{http: client, token: token, baseURL: apiBase, retryOpts: retryOpts, logger: logger}
+	return &Client{
+		http: client, token: token, baseURL: apiBase,
+		retryOpts: retryOpts, logger: logger,
+		cache: newCondCache(condCachePath, logger),
+	}
 }
 
 // apiRepo is the subset of the /user/repos response github-scout reads.
@@ -102,7 +110,7 @@ func (c *Client) ListRepos(ctx context.Context, owner string) ([]model.Repo, err
 		reqURL := c.baseURL + "/user/repos?" + q.Encode()
 
 		var pageRepos []apiRepo
-		if err := c.getJSON(ctx, reqURL, &pageRepos); err != nil {
+		if err := c.getJSONConditional(ctx, reqURL, &pageRepos); err != nil {
 			return nil, fmt.Errorf("list repos page %d: %w", page, err)
 		}
 		for _, r := range pageRepos {
@@ -197,18 +205,25 @@ func (c *Client) ListRuns(ctx context.Context, repo model.Repo, since time.Time)
 	return runs, nil
 }
 
+// setHeaders applies the auth + version headers every GitHub request
+// carries, shared by the unconditional (getJSON) and conditional
+// (getJSONConditional) paths.
+func (c *Client) setHeaders(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+c.token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", apiVersion)
+}
+
 // getJSON fetches reqURL with auth + version headers via the httpx retry
 // transport and decodes the body into out. The body is capped so a
 // runaway response can't exhaust memory.
 func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 	opts := make([]httpx.GetOption, 0, len(c.retryOpts)+3)
-	opts = append(opts, c.retryOpts...)
+	for _, o := range c.retryOpts {
+		opts = append(opts, o)
+	}
 	opts = append(opts,
-		httpx.WithHeaders(func(req *http.Request) {
-			req.Header.Set("Authorization", "Bearer "+c.token)
-			req.Header.Set("Accept", "application/vnd.github+json")
-			req.Header.Set("X-GitHub-Api-Version", apiVersion)
-		}),
+		httpx.WithHeaders(c.setHeaders),
 		httpx.WithMaxBodyBytes(bodyCap),
 		// Route httpx's retry diagnostics through the client's logger
 		// instead of the global slog.Default(), so retry logs share the
@@ -225,8 +240,85 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 	return nil
 }
 
-// mapStatusError translates the SYSTEMIC transport failures httpx.GetBytes can
-// return into the domain sentinels the collector escalates on, so
+// getJSONConditional is getJSON over a conditional GET (httpx.DoConditional)
+// backed by the client's per-URL cache: an unchanged resource revalidates as
+// a 304 — which GitHub serves without charging the primary rate limit — and
+// out is filled from the cached item subset; a 200 fills out from the body
+// and refreshes the cache. Used by the endpoints whose URLs are stable
+// across scans (the repo listing and per-repo code-scanning alerts) so
+// their ETags actually match; the runs query stays on getJSON — its
+// `created>=` window moves every scan, so its URL (and thus validator) can
+// never stabilize.
+func (c *Client) getJSONConditional(ctx context.Context, reqURL string, out any) error {
+	res, err := c.conditionalGet(ctx, reqURL, c.cache.validators(reqURL))
+	if err != nil {
+		return mapStatusError(err)
+	}
+	if res.NotModified {
+		if c.cache.decodeInto(reqURL, out) {
+			return nil
+		}
+		// A 304 without a usable cached representation: the persisted entry
+		// was corrupt (decodeInto dropped it), or an out-of-contract upstream
+		// answered an unconditional request with a 304. Refetch once without
+		// validators; a second 304 is a hard upstream fault.
+		res, err = c.conditionalGet(ctx, reqURL, httpx.Validators{})
+		if err != nil {
+			return mapStatusError(err)
+		}
+		if res.NotModified {
+			return errors.New("upstream returned 304 to an unconditional request")
+		}
+	}
+	if err := json.Unmarshal(res.Body, out); err != nil {
+		return fmt.Errorf("decode response: %w", err)
+	}
+	c.cache.store(reqURL, res.Validators, out)
+	return nil
+}
+
+// conditionalGet runs one conditional GET under the same retry loop as the
+// unconditional path (httpx.Do; DoConditional is single-attempt by
+// contract). A non-transient 5xx is wrapped transient so this door retries
+// every 5xx exactly as GetBytes does — DoConditional's CheckHTTPStatus
+// mapping classifies only 502/503/504 transient, and the repo listing is
+// the scan's one health-flipping call, so it must not lose retries in the
+// adoption.
+func (c *Client) conditionalGet(ctx context.Context, reqURL string, v httpx.Validators) (httpx.ConditionalResult, error) {
+	opts := make([]httpx.DoOption, 0, len(c.retryOpts)+2)
+	for _, o := range c.retryOpts {
+		opts = append(opts, o)
+	}
+	opts = append(opts, httpx.WithLabel("github"), httpx.WithLogger(c.logger))
+	return httpx.Do(ctx, func(ctx context.Context) (httpx.ConditionalResult, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, http.NoBody)
+		if err != nil {
+			return httpx.ConditionalResult{}, err
+		}
+		c.setHeaders(req)
+		res, err := httpx.DoConditional(c.http, req, v, bodyCap)
+		if hse, ok := errors.AsType[*httpx.HTTPStatusError](err); ok && hse.IsServerError() && !hse.IsTransient() {
+			err = transientStatusError{err}
+		}
+		return res, err
+	}, opts...)
+}
+
+// transientStatusError marks a non-transient 5xx from the conditional door
+// retryable, aligning it with the GetBytes door's all-5xx retry policy (the
+// per-door divergence is deliberate in httpx; this client wants one policy
+// across both of its paths).
+type transientStatusError struct{ error }
+
+// IsTransient implements httpx.Transient.
+func (transientStatusError) IsTransient() bool { return true }
+
+// Unwrap exposes the wrapped status error to errors.As chains
+// (codeScanningNotFound, mapStatusError).
+func (e transientStatusError) Unwrap() error { return e.error }
+
+// mapStatusError translates the SYSTEMIC transport failures the two request
+// paths can return into the domain sentinels the collector escalates on, so
 // internal/collect classifies on meaning and never imports httpx. A 401
 // (rejected token) and a 429 (rate limit) are org-wide — they poison every
 // call this scan — so they become model.ErrTokenInvalid / model.ErrRateLimited
@@ -237,6 +329,16 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 // ErrNoCodeScanning. This is the same boundary mapping as codeScanningNotFound,
 // kept in one place so the github client is the single authority on
 // status→meaning.
+//
+// Two wire families arrive here: GetBytes returns *httpx.StatusError (with
+// the code), while DoConditional classifies through httpx.CheckHTTPStatus —
+// *httpx.RateLimitError for a 429, and *httpx.AuthError for BOTH 401 and
+// 403. The AuthError message embeds the status ("invalid API key (401)" /
+// "access denied (403)"), and only the 401 may escalate to ErrTokenInvalid:
+// a 403 is per-repo (GHAS off) and escalating it would page on every
+// private repo without Advanced Security. An AuthError whose message
+// matches neither stays generic — failing toward degraded-not-escalated,
+// the app's safe direction.
 func mapStatusError(err error) error {
 	if se, ok := errors.AsType[*httpx.StatusError](err); ok {
 		switch se.Code {
@@ -245,6 +347,13 @@ func mapStatusError(err error) error {
 		case http.StatusTooManyRequests:
 			return fmt.Errorf("%w: %w", model.ErrRateLimited, err)
 		}
+		return err
+	}
+	if _, ok := errors.AsType[*httpx.RateLimitError](err); ok {
+		return fmt.Errorf("%w: %w", model.ErrRateLimited, err)
+	}
+	if ae, ok := errors.AsType[*httpx.AuthError](err); ok && strings.Contains(ae.Msg, "(401)") {
+		return fmt.Errorf("%w: %w", model.ErrTokenInvalid, err)
 	}
 	return err
 }
@@ -417,7 +526,7 @@ func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([
 		reqURL := fmt.Sprintf("%s/repos/%s/%s/code-scanning/alerts?%s", c.baseURL, repo.Owner, repo.Name, v.Encode())
 
 		var pageAlerts []apiCodeAlert
-		if err := c.getJSON(ctx, reqURL, &pageAlerts); err != nil {
+		if err := c.getJSONConditional(ctx, reqURL, &pageAlerts); err != nil {
 			if codeScanningNotFound(err) && len(alerts) == 0 {
 				// No analyses for this repo (404): not a read failure but a
 				// benign "no data" outcome. Surface model.ErrNoCodeScanning so
@@ -455,10 +564,15 @@ func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([
 // treated here: it conflates GitHub Advanced Security being disabled
 // (common on private repos) with a missing token scope or a rate-limit, and
 // silently reporting zero alerts on the latter two would be a false-negative
-// on a security signal — so a 403 is surfaced as an error instead.
+// on a security signal — so a 403 is surfaced as an error instead. Both
+// wire families are covered: GetBytes's *StatusError and the conditional
+// door's *HTTPStatusError (CheckHTTPStatus leaves a 404 in the latter).
 func codeScanningNotFound(err error) bool {
 	if se, ok := errors.AsType[*httpx.StatusError](err); ok {
 		return se.Code == http.StatusNotFound
+	}
+	if hse, ok := errors.AsType[*httpx.HTTPStatusError](err); ok {
+		return hse.Code == http.StatusNotFound
 	}
 	return false
 }
