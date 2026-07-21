@@ -21,7 +21,7 @@ import (
 // http.Client so tests never hang.
 func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 	t.Helper()
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default())
+	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
 	c.baseURL = srv.URL
 	return c
 }
@@ -192,7 +192,7 @@ func TestListRunsPaginates(t *testing.T) {
 }
 
 func TestUnsafeSegmentsRejected(t *testing.T) {
-	c := NewClient(httpx.NewClient(time.Second), "tok", nil, slog.Default())
+	c := NewClient(httpx.NewClient(time.Second), "tok", nil, slog.Default(), "")
 	if _, err := c.ListRepos(context.Background(), "../evil"); err == nil {
 		t.Errorf("ListRepos accepted unsafe owner")
 	}
@@ -374,7 +374,7 @@ func TestStatus429MapsRateLimited(t *testing.T) {
 
 	// One attempt only: a 429 is retryable, and the test only needs to observe
 	// the post-exhaustion mapping, not sit through backoff.
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.GetOption{httpx.WithMaxAttempts(1)}, slog.Default())
+	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default(), "")
 	c.baseURL = srv.URL
 
 	_, err := c.ListRepos(context.Background(), "cplieger")
@@ -401,7 +401,7 @@ func TestRepoFromAPIURL(t *testing.T) {
 
 func TestNewClientNilLoggerDefaults(t *testing.T) {
 	// A nil logger must fall back to slog.Default, never be left nil.
-	c := NewClient(httpx.NewClient(time.Second), "tok", nil, nil)
+	c := NewClient(httpx.NewClient(time.Second), "tok", nil, nil, "")
 	if c.logger == nil {
 		t.Errorf("NewClient with nil logger left c.logger nil; want slog.Default fallback")
 	}
@@ -548,7 +548,7 @@ func TestCodeScanningNotFound(t *testing.T) {
 // traversal/injection segment (../evil) must be rejected before URL
 // construction in each.
 func TestUnsafeSegmentsRejectedSearchAndCodeScanning(t *testing.T) {
-	c := NewClient(httpx.NewClient(time.Second), "tok", nil, slog.Default())
+	c := NewClient(httpx.NewClient(time.Second), "tok", nil, slog.Default(), "")
 
 	if _, err := c.SearchOpenPRs(context.Background(), "../evil", ""); err == nil {
 		t.Errorf("SearchOpenPRs accepted unsafe owner")
@@ -657,7 +657,7 @@ func TestListRunsReturnsPartialOnMidPaginationError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.GetOption{httpx.WithMaxAttempts(1)}, slog.Default())
+	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default(), "")
 	c.baseURL = srv.URL
 
 	runs, err := c.ListRuns(context.Background(), model.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
@@ -673,7 +673,7 @@ func TestListRunsReturnsPartialOnMidPaginationError(t *testing.T) {
 // the client's logger into httpx via WithLogger: httpx's per-attempt retry
 // diagnostics must land on the injected logger, not the global slog.Default().
 // The server returns one 503 (retried) then 200, so httpx logs one Debug
-// "will retry" line, which must appear in the client logger's buffer.
+// "failed, retrying" line, which must appear in the client logger's buffer.
 func TestGetJSON_routes_retry_logs_to_client_logger(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -690,13 +690,13 @@ func TestGetJSON_routes_retry_logs_to_client_logger(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	c := NewClient(httpx.NewClient(5*time.Second), "tok",
-		[]httpx.GetOption{httpx.WithBaseDelay(time.Millisecond)}, logger)
+		[]httpx.Option{httpx.WithBaseDelay(time.Millisecond)}, logger, "")
 	c.baseURL = srv.URL
 
 	if _, err := c.ListRepos(context.Background(), "cplieger"); err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}
-	if !strings.Contains(buf.String(), "will retry") {
+	if !strings.Contains(buf.String(), "failed, retrying") {
 		t.Errorf("client logger did not capture httpx retry log (WithLogger not wired?); log=%q", buf.String())
 	}
 }

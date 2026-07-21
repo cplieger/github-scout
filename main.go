@@ -61,6 +61,16 @@ import (
 // last-writer-wins overwrite.
 const seenStatePath = "/tmp/seen-runs.json"
 
+// condCachePath persists the GitHub client's conditional-request cache:
+// per-URL ETag/Last-Modified validators plus the item subset they validate,
+// for the endpoints whose URLs are stable across scans (the repo listing and
+// per-repo code-scanning alerts). An unchanged resource then revalidates as
+// a 304 — which GitHub serves without charging the primary rate limit — and
+// the snapshot is re-emitted from the cached items. Same best-effort /tmp
+// contract as seenStatePath (flock'd SlotFile, cold start on recreate),
+// shared by the daemon and one-shot trigger processes.
+const condCachePath = "/tmp/cond-cache.json"
+
 func main() {
 	// Install the JSON handler before anything logs (including config.Load
 	// warnings) so every line is JSON on stdout; setupLogging sets the level
@@ -186,7 +196,7 @@ func loadConfig() (config.Config, bool) {
 // trigger path. The caller owns CloseIdleConnections on the returned client.
 func buildCollector(cfg *config.Config) (*collect.Collector, *http.Client) {
 	httpClient := httpx.NewClient(30 * time.Second)
-	gh := github.NewClient(httpClient, cfg.Token, nil, slog.Default())
+	gh := github.NewClient(httpClient, cfg.Token, nil, slog.Default(), condCachePath)
 	collector := collect.New(&collect.Deps{
 		Client:              gh,
 		Logger:              slog.Default(),

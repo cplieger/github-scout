@@ -111,6 +111,18 @@ still inside the lookback window; the dashboard also dedups run counts by run
 ID, so counts stay correct either way. Persistence is a best-effort
 optimisation, never a correctness dependency.
 
+A second small file, `/tmp/cond-cache.json`, holds the GitHub client's
+conditional-request cache under the same contract: per-URL
+`ETag`/`Last-Modified` validators plus the item subset they validate, for the
+endpoints whose URLs are stable across scans (the repo listing and per-repo
+code-scanning alerts). An unchanged resource then revalidates as a `304` —
+which GitHub serves **without charging the primary rate limit** — and the
+snapshot is re-emitted from the cached items, so an idle fleet costs a
+fraction of its former request budget. The Actions runs query deliberately
+stays unconditional: its `created>=` window moves every scan, so its URL (and
+thus its validator) can never stabilise. Losing this file costs one
+full-price scan, nothing more.
+
 ### Architecture
 
 ```
