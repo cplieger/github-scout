@@ -113,10 +113,10 @@ func TestScanCodeScanningExcludeSkipsSignalNotRepo(t *testing.T) {
 	c.Scan(context.Background())
 
 	// The excluded repo's would-be 403 must not surface: not degraded, no signal.
-	if d, _ := rec.boolAttr("scan complete", "degraded"); d {
+	if rec.HasAttr("scan complete", "degraded", "true") {
 		t.Errorf("an excluded-from-code-scanning repo's 403 must not mark the scan degraded")
 	}
-	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "" {
+	if got, _ := rec.AttrValue("scan complete", "failed_signals"); got != "" {
 		t.Errorf("failed_signals = %q, want empty (the only code-scanning failure was on an excluded repo)", got)
 	}
 	if rec.CountExact("scan degraded") != 0 {
@@ -150,13 +150,13 @@ func TestScanPartialFailuresStillHealthy(t *testing.T) {
 	if !c.Scan(context.Background()) {
 		t.Errorf("partial per-signal failures must not flip the scan unhealthy")
 	}
-	if d, ok := rec.boolAttr("scan complete", "degraded"); !ok || !d {
-		t.Errorf("degraded = %v (found=%v), want true when every signal failed", d, ok)
+	if v, ok := rec.AttrValue("scan complete", "degraded"); !ok || v != "true" {
+		t.Errorf("degraded = %q (found=%v), want true when every signal failed", v, ok)
 	}
-	if n, ok := rec.intAttr("scan complete", "errors"); !ok || n != 4 {
-		t.Errorf("errors = %d (found=%v), want 4 (PRs, issues, runs, alerts)", n, ok)
+	if v, ok := rec.AttrValue("scan complete", "errors"); !ok || v != "4" {
+		t.Errorf("errors = %q (found=%v), want 4 (PRs, issues, runs, alerts)", v, ok)
 	}
-	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "open_prs,open_issues,runs,code_scanning" {
+	if got, _ := rec.AttrValue("scan complete", "failed_signals"); got != "open_prs,open_issues,runs,code_scanning" {
 		t.Errorf("failed_signals = %q, want all four signals", got)
 	}
 	if rec.CountExact("scan degraded") != 1 {
@@ -165,7 +165,7 @@ func TestScanPartialFailuresStillHealthy(t *testing.T) {
 	// All four signals are blind here with no systemic flag, so the diagnosis
 	// ladder resolves to code_scanning_blind — pinning that it outranks
 	// runs_blind / signal_blind (the security signal is the most actionable).
-	if cause, _ := rec.strAttr("scan degraded", "cause"); cause != "code_scanning_blind" {
+	if cause, _ := rec.AttrValue("scan degraded", "cause"); cause != "code_scanning_blind" {
 		t.Errorf("cause = %q, want code_scanning_blind (it outranks runs_blind/signal_blind)", cause)
 	}
 }
@@ -191,11 +191,11 @@ func TestScanEmitsAllFourSignals(t *testing.T) {
 
 	// The "scan complete" summary must count the one item of each signal
 	// (pins the open_prs / open_issues counters).
-	if n, ok := rec.intAttr("scan complete", "open_prs"); !ok || n != 1 {
-		t.Errorf("open_prs = %d (found=%v), want 1", n, ok)
+	if v, ok := rec.AttrValue("scan complete", "open_prs"); !ok || v != "1" {
+		t.Errorf("open_prs = %q (found=%v), want 1", v, ok)
 	}
-	if n, ok := rec.intAttr("scan complete", "open_issues"); !ok || n != 1 {
-		t.Errorf("open_issues = %d (found=%v), want 1", n, ok)
+	if v, ok := rec.AttrValue("scan complete", "open_issues"); !ok || v != "1" {
+		t.Errorf("open_issues = %q (found=%v), want 1", v, ok)
 	}
 	// No run-list error occurred, so the partial-failure warning must not fire.
 	if n := rec.CountExact("partial failure listing runs"); n != 0 {
@@ -250,11 +250,11 @@ func TestScanEmitsEveryRunAndCountsFailures(t *testing.T) {
 	if got := rec.CountExact("workflow run"); got != 4 {
 		t.Errorf("emitted %d workflow-run lines, want 4 (every completed run, not just failures)", got)
 	}
-	if n, ok := rec.intAttr("scan complete", "new_runs"); !ok || n != 4 {
-		t.Errorf("new_runs = %d (found=%v), want 4", n, ok)
+	if v, ok := rec.AttrValue("scan complete", "new_runs"); !ok || v != "4" {
+		t.Errorf("new_runs = %q (found=%v), want 4", v, ok)
 	}
-	if n, ok := rec.intAttr("scan complete", "new_failures"); !ok || n != 2 {
-		t.Errorf("new_failures = %d (found=%v), want 2 (failure + timed_out)", n, ok)
+	if v, ok := rec.AttrValue("scan complete", "new_failures"); !ok || v != "2" {
+		t.Errorf("new_failures = %q (found=%v), want 2 (failure + timed_out)", v, ok)
 	}
 }
 
@@ -284,11 +284,11 @@ func TestExcludeReposSkipsAllSignals(t *testing.T) {
 
 	// The per-repo loop counters surfaced in the summary: one repo scanned
 	// ("x"), one skipped ("noisy"). Pins the scanned++/skipped++ increments.
-	if n, ok := rec.intAttr("scan complete", "scanned"); !ok || n != 1 {
-		t.Errorf("scanned = %d (found=%v), want 1 (only the non-excluded repo)", n, ok)
+	if v, ok := rec.AttrValue("scan complete", "scanned"); !ok || v != "1" {
+		t.Errorf("scanned = %q (found=%v), want 1 (only the non-excluded repo)", v, ok)
 	}
-	if n, ok := rec.intAttr("scan complete", "skipped"); !ok || n != 1 {
-		t.Errorf("skipped = %d (found=%v), want 1 (the excluded repo)", n, ok)
+	if v, ok := rec.AttrValue("scan complete", "skipped"); !ok || v != "1" {
+		t.Errorf("skipped = %q (found=%v), want 1 (the excluded repo)", v, ok)
 	}
 }
 
@@ -435,11 +435,12 @@ func (w testWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// recordingHandler is the shared slogx capture.Recorder plus the attr-lookup
-// helpers these tests assert scan summaries with. Recording (mutex, record
-// Clone) and exact-message counting (CountExact — the semantics the former
-// hand-rolled countMsg had, and what the alert-pinned messages like
-// "scan degraded" require) come from the embedded Recorder.
+// recordingHandler is the shared slogx capture.Recorder. Recording (mutex,
+// record materialization), exact-message counting (CountExact — what the
+// alert-pinned messages like "scan degraded" require), and the attr-level
+// assertions (AttrValue/HasAttr, rendered-string comparisons) all come from
+// the embedded Recorder; only attrKeys (a key-SET enumeration against the
+// model JSON tags, which has no library equivalent) stays a local walk.
 type recordingHandler struct{ *capture.Recorder }
 
 func newRecordingHandler() *recordingHandler {
@@ -454,23 +455,6 @@ func (h *recordingHandler) firstRecord(msg string) (slog.Record, bool) {
 		}
 	}
 	return slog.Record{}, false
-}
-
-// intAttr returns the int64 value of attribute key on the first record with
-// the given message, used to assert scan-summary counts (new_runs, etc.).
-func (h *recordingHandler) intAttr(msg, key string) (out int64, found bool) {
-	r, ok := h.firstRecord(msg)
-	if !ok {
-		return 0, false
-	}
-	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == key {
-			out, found = a.Value.Int64(), true
-			return false
-		}
-		return true
-	})
-	return out, found
 }
 
 // attrKeys returns the set of attribute keys on the first record whose
@@ -717,41 +701,6 @@ func sortedKeys(m map[string]bool) []string {
 	return slices.Sorted(maps.Keys(m))
 }
 
-// boolAttr returns the bool value of attribute key on the first record with
-// the given message, used to assert scan-summary flags (degraded,
-// auth_or_ratelimit).
-func (h *recordingHandler) boolAttr(msg, key string) (value, found bool) {
-	r, ok := h.firstRecord(msg)
-	if !ok {
-		return false, false
-	}
-	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == key {
-			value, found = a.Value.Bool(), true
-			return false
-		}
-		return true
-	})
-	return value, found
-}
-
-// strAttr returns the string value of attribute key on the first record with
-// the given message (e.g. failed_signals).
-func (h *recordingHandler) strAttr(msg, key string) (value string, found bool) {
-	r, ok := h.firstRecord(msg)
-	if !ok {
-		return "", false
-	}
-	r.Attrs(func(a slog.Attr) bool {
-		if a.Key == key {
-			value, found = a.Value.String(), true
-			return false
-		}
-		return true
-	})
-	return value, found
-}
-
 // TestSnapshotsFilterForeignOwnerRepos pins the foreign-owner defensive filter
 // in collectPRs/collectIssues: the cross-repo search may return a repo outside
 // the configured owner (or a look-alike login like cplieger-evil that shares a
@@ -876,13 +825,13 @@ func TestCollectRunsEmitsPartialRunsOnError(t *testing.T) {
 	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("emitted %d workflow-run lines, want 1 (the partial set must be emitted even though the list errored)", got)
 	}
-	if n, ok := rec.intAttr("scan complete", "new_failures"); !ok || n != 1 {
-		t.Errorf("new_failures = %d (found=%v), want 1", n, ok)
+	if v, ok := rec.AttrValue("scan complete", "new_failures"); !ok || v != "1" {
+		t.Errorf("new_failures = %q (found=%v), want 1", v, ok)
 	}
-	if got, _ := rec.strAttr("scan complete", "failed_signals"); got != "runs" {
+	if got, _ := rec.AttrValue("scan complete", "failed_signals"); got != "runs" {
 		t.Errorf("failed_signals = %q, want \"runs\"", got)
 	}
-	if d, ok := rec.boolAttr("scan complete", "degraded"); !ok || !d {
-		t.Errorf("degraded = %v (found=%v), want true", d, ok)
+	if v, ok := rec.AttrValue("scan complete", "degraded"); !ok || v != "true" {
+		t.Errorf("degraded = %q (found=%v), want true", v, ok)
 	}
 }
