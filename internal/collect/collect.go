@@ -42,7 +42,7 @@ import (
 	"time"
 
 	"github.com/cplieger/github-scout/internal/model"
-	"github.com/cplieger/scheduler/v2"
+	"github.com/cplieger/scheduler/v3"
 )
 
 // Collector holds the cross-scan state: the GitHub client, scan
