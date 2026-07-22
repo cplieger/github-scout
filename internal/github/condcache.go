@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/cplieger/httpx/v3"
-	"github.com/cplieger/scheduler/v2"
+	"github.com/cplieger/scheduler/v3"
 )
 
 // condCacheRetention bounds how long a cache entry survives without being
