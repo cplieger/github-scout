@@ -79,7 +79,7 @@ func main() {
 
 	// CLI subcommands for the distroless image (no shell): `health` for the
 	// Docker healthcheck (checks the marker file), `trigger` for a one-shot
-	// scan driven by an external scheduler (Ofelia job-exec).
+	// scan on a bare host (cron, CI, the dev loop).
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "health":
