@@ -28,10 +28,12 @@ contradict those decisions need a strong justification.
 
 `github-scout` is a single Go binary that polls the GitHub REST API on a
 schedule and emits four actionable signals as JSON to stdout. It keeps no
-database; history lives in Loki. The only cross-scan state is the event-once
-run dedup set, which lives in memory and is also persisted to a small
-`/tmp/seen-runs.json` so it survives across one-shot `trigger` processes (see
-the README's _State_ section). There is no HTTP server and no listening port.
+database; history lives in Loki. The only cross-scan state is two small
+best-effort files: the event-once run dedup set (`/tmp/seen-runs.json`, held
+in memory and persisted so it survives across one-shot `trigger` processes;
+see the README's _Two emission models_ section) and the HTTP revalidation
+cache (`/tmp/cond-cache.json`, which lets unchanged GitHub resources answer
+as free 304s). There is no HTTP server and no listening port.
 
 `main.go` is a **pure composition root**: it wires config → `httpx` client →
 `github.Client` → `collect.Collector` → health marker, then runs the
@@ -108,14 +110,14 @@ CI uses (golangci-lint, gitleaks, govulncheck, fieldalignment, …) so your loca
 results match the gate, run that repo's `scripts/install-local-tools.sh`.
 
 Several config files (`.golangci.yaml`, `.editorconfig`, `LICENSE`, the CI
-workflows, `renovate.json`, `cliff.toml`) are **not** committed here; they are
+workflows, `renovate.json`, `cliff.toml`) are **not** maintained here; they are
 synced in from `cplieger/ci` and marked `DO NOT EDIT`. Change CI behaviour
-upstream, not in this repo; a local copy would be overwritten by the next sync.
+upstream, not in this repo; a local edit would be overwritten by the next sync.
 
 ## Running it locally
 
 Use the `trigger` subcommand with a token so you scan once and exit instead of
-looping (this is also how an external scheduler drives it; see the README's
+looping (this is also how cron drives it on a bare host; see the README's
 "Run modes"):
 
 ```bash
@@ -179,7 +181,7 @@ left pending") can be added without disturbing the failed-run path:
 
 1. **Model**: add a type in `internal/model`. Its JSON tags document the
    fields, but the Loki field names are the literal slog keys you emit in
-   step 4 — keep the tags in sync with those keys (the four existing signals
+   step 4; keep the tags in sync with those keys (the four existing signals
    are guarded by `TestLogKeysMatchModelTags`; add your new type to it).
 2. **Client**: add a read method on `internal/github.Client` (page-count
    pagination via `getJSON`, `urlsafe` for any path segments).
@@ -187,7 +189,7 @@ left pending") can be added without disturbing the failed-run path:
    `internal/collect` so the fake can script it.
 4. **Collector**: add a `collect<Signal>` method that emits each item with its
    own stable `msg` string; choose the event-once model (dedup by ID, like
-   `collectFailedRuns` + `prune`) or the snapshot model (re-emit the full
+   `collectRuns` + `prune`) or the snapshot model (re-emit the full
    current set each scan, like `collectPRs`).
 5. **Dashboard**: add a panel to `grafana-dashboard.json` filtering on the new
    `msg`.
