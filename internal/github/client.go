@@ -27,7 +27,7 @@ import (
 
 	"github.com/cplieger/github-scout/internal/model"
 	"github.com/cplieger/github-scout/internal/urlsafe"
-	"github.com/cplieger/httpx/v3"
+	"github.com/cplieger/httpx/v4"
 	"github.com/cplieger/runesafe"
 )
 
