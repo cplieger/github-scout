@@ -44,7 +44,7 @@ import (
 	"github.com/cplieger/github-scout/internal/github"
 	"github.com/cplieger/github-scout/internal/urlsafe"
 	"github.com/cplieger/health"
-	"github.com/cplieger/httpx/v3"
+	"github.com/cplieger/httpx/v4"
 	"github.com/cplieger/scheduler/v3"
 	"github.com/cplieger/slogx"
 )

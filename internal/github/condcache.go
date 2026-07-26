@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/cplieger/httpx/v3"
+	"github.com/cplieger/httpx/v4"
 	"github.com/cplieger/scheduler/v3"
 )
 
