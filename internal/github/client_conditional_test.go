@@ -1,7 +1,6 @@
 package github
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -67,14 +66,14 @@ func TestListRepos_conditionalRevalidation(t *testing.T) {
 	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
 	c.baseURL = cs.srv.URL
 
-	first, err := c.ListRepos(context.Background(), "cplieger")
+	first, err := c.ListRepos(t.Context(), "cplieger")
 	if err != nil {
 		t.Fatalf("ListRepos #1: %v", err)
 	}
 	if got := cs.lastINM.Load(); got == nil || *got != "" {
 		t.Errorf("first request If-None-Match = %q, want empty (cold cache must not revalidate)", *got)
 	}
-	second, err := c.ListRepos(context.Background(), "cplieger")
+	second, err := c.ListRepos(t.Context(), "cplieger")
 	if err != nil {
 		t.Fatalf("ListRepos #2: %v", err)
 	}
@@ -100,7 +99,7 @@ func TestListCodeScanningAlerts_conditionalRevalidation(t *testing.T) {
 	repo := model.Repo{Owner: "cplieger", Name: "x"}
 
 	for i := range 2 {
-		alerts, err := c.ListCodeScanningAlerts(context.Background(), repo)
+		alerts, err := c.ListCodeScanningAlerts(t.Context(), repo)
 		if err != nil {
 			t.Fatalf("ListCodeScanningAlerts #%d: %v", i+1, err)
 		}
@@ -123,13 +122,13 @@ func TestConditional_cachePersistsAcrossClients(t *testing.T) {
 
 	c1 := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), path)
 	c1.baseURL = cs.srv.URL
-	if _, err := c1.ListRepos(context.Background(), "cplieger"); err != nil {
+	if _, err := c1.ListRepos(t.Context(), "cplieger"); err != nil {
 		t.Fatalf("ListRepos (client 1): %v", err)
 	}
 
 	c2 := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), path)
 	c2.baseURL = cs.srv.URL
-	repos, err := c2.ListRepos(context.Background(), "cplieger")
+	repos, err := c2.ListRepos(t.Context(), "cplieger")
 	if err != nil {
 		t.Fatalf("ListRepos (client 2): %v", err)
 	}
@@ -153,7 +152,7 @@ func TestConditional_corruptCacheFileStartsCold(t *testing.T) {
 
 	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), path)
 	c.baseURL = cs.srv.URL
-	if _, err := c.ListRepos(context.Background(), "cplieger"); err != nil {
+	if _, err := c.ListRepos(t.Context(), "cplieger"); err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}
 	if got := cs.lastINM.Load(); got == nil || *got != "" {
@@ -174,7 +173,7 @@ func TestConditional_noValidatorsMeansNoCaching(t *testing.T) {
 	c.baseURL = cs.srv.URL
 
 	for i := range 2 {
-		if _, err := c.ListRepos(context.Background(), "cplieger"); err != nil {
+		if _, err := c.ListRepos(t.Context(), "cplieger"); err != nil {
 			t.Fatalf("ListRepos #%d: %v", i+1, err)
 		}
 	}
@@ -197,7 +196,7 @@ func TestConditional_304WithoutCacheRefetchesOnce(t *testing.T) {
 
 	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
 	c.baseURL = srv.URL
-	_, err := c.ListRepos(context.Background(), "cplieger")
+	_, err := c.ListRepos(t.Context(), "cplieger")
 	if err == nil {
 		t.Fatal("ListRepos = nil error, want the 304-without-cache fault")
 	}
@@ -232,7 +231,7 @@ func TestConditional_statusMapping(t *testing.T) {
 				[]httpx.Option{httpx.WithMaxAttempts(1), httpx.WithBaseDelay(time.Millisecond)}, slog.Default(), "")
 			c.baseURL = srv.URL
 
-			_, err := c.ListRepos(context.Background(), "cplieger")
+			_, err := c.ListRepos(t.Context(), "cplieger")
 			if err == nil {
 				t.Fatalf("ListRepos = nil error, want HTTP %d surfaced", tt.status)
 			}
@@ -257,7 +256,7 @@ func TestConditional_codeScanning404StillMapsToNoCodeScanning(t *testing.T) {
 	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
 	c.baseURL = srv.URL
 
-	_, err := c.ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "x"})
+	_, err := c.ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "x"})
 	if !errors.Is(err, model.ErrNoCodeScanning) {
 		t.Errorf("ListCodeScanningAlerts error = %v, want ErrNoCodeScanning", err)
 	}
@@ -282,7 +281,7 @@ func TestConditional_500IsRetried(t *testing.T) {
 		[]httpx.Option{httpx.WithBaseDelay(time.Millisecond)}, slog.Default(), "")
 	c.baseURL = srv.URL
 
-	if _, err := c.ListRepos(context.Background(), "cplieger"); err != nil {
+	if _, err := c.ListRepos(t.Context(), "cplieger"); err != nil {
 		t.Fatalf("ListRepos = %v, want the 500 retried into a 200", err)
 	}
 	if got := calls.Load(); got != 2 {
