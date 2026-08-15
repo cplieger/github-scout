@@ -70,14 +70,14 @@ func newCollector(t *testing.T, fc *fakeClient, exclude map[string]bool) *Collec
 
 func TestScanDiscoveryFailureUnhealthy(t *testing.T) {
 	fc := &fakeClient{reposErr: errors.New("bad token")}
-	if newCollector(t, fc, nil).Scan(context.Background()) {
+	if newCollector(t, fc, nil).Scan(t.Context()) {
 		t.Errorf("Scan should be unhealthy when repo discovery fails")
 	}
 }
 
 func TestScanHealthyWithNoSignals(t *testing.T) {
 	fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "clean"}}}
-	if !newCollector(t, fc, nil).Scan(context.Background()) {
+	if !newCollector(t, fc, nil).Scan(t.Context()) {
 		t.Errorf("Scan should be healthy when discovery works, even with zero signals")
 	}
 }
@@ -110,7 +110,7 @@ func TestScanCodeScanningExcludeSkipsSignalNotRepo(t *testing.T) {
 	})
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
-	c.Scan(context.Background())
+	c.Scan(t.Context())
 
 	// The excluded repo's would-be 403 must not surface: not degraded, no signal.
 	if rec.HasAttr("scan complete", "degraded", "true") {
@@ -147,7 +147,7 @@ func TestScanPartialFailuresStillHealthy(t *testing.T) {
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
-	if !c.Scan(context.Background()) {
+	if !c.Scan(t.Context()) {
 		t.Errorf("partial per-signal failures must not flip the scan unhealthy")
 	}
 	if v, ok := rec.AttrValue("scan complete", "degraded"); !ok || v != "true" {
@@ -181,7 +181,7 @@ func TestScanEmitsAllFourSignals(t *testing.T) {
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
-	c.Scan(context.Background())
+	c.Scan(t.Context())
 
 	for _, msg := range []string{"open pull request", "open issue", "workflow run", "code scanning alert"} {
 		if rec.CountExact(msg) != 1 {
@@ -216,8 +216,8 @@ func TestRunsDedupButSnapshotsRepeat(t *testing.T) {
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
-	c.Scan(context.Background())
-	c.Scan(context.Background())
+	c.Scan(t.Context())
+	c.Scan(t.Context())
 
 	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("workflow run emitted %d times, want 1 (event-once dedup)", got)
@@ -245,7 +245,7 @@ func TestScanEmitsEveryRunAndCountsFailures(t *testing.T) {
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
-	c.Scan(context.Background())
+	c.Scan(t.Context())
 
 	if got := rec.CountExact("workflow run"); got != 4 {
 		t.Errorf("emitted %d workflow-run lines, want 4 (every completed run, not just failures)", got)
@@ -270,7 +270,7 @@ func TestExcludeReposSkipsAllSignals(t *testing.T) {
 	c := newCollector(t, fc, map[string]bool{"noisy": true})
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
-	c.Scan(context.Background())
+	c.Scan(t.Context())
 
 	if fc.runCalls != 1 {
 		t.Errorf("ListRuns called %d times, want 1 (noisy excluded)", fc.runCalls)
@@ -300,7 +300,7 @@ func TestPruneDropsRunsOlderThanLookback(t *testing.T) {
 		runs:  map[string][]model.WorkflowRun{"cplieger/x": {old, fresh}},
 	}
 	c := newCollector(t, fc, nil)
-	c.Scan(context.Background())
+	c.Scan(t.Context())
 	if _, ok := c.seen[1]; ok {
 		t.Errorf("run 1 (older than lookback) should have been pruned")
 	}
@@ -326,7 +326,7 @@ func TestStatePersistsDedupAcrossProcesses(t *testing.T) {
 	}
 
 	c1, rec1 := mk()
-	c1.Scan(context.Background())
+	c1.Scan(t.Context())
 	if got := rec1.CountExact("workflow run"); got != 1 {
 		t.Fatalf("first trigger emitted %d workflow-run lines, want 1", got)
 	}
@@ -336,7 +336,7 @@ func TestStatePersistsDedupAcrossProcesses(t *testing.T) {
 	}
 
 	c2, rec2 := mk() // fresh "process", same state file
-	c2.Scan(context.Background())
+	c2.Scan(t.Context())
 	if got := rec2.CountExact("workflow run"); got != 0 {
 		t.Errorf("second trigger emitted %d workflow-run lines, want 0 (dedup state reloaded)", got)
 	}
@@ -359,7 +359,7 @@ func TestStateCorruptStartsCold(t *testing.T) {
 		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
-	c.Scan(context.Background()) // must not panic
+	c.Scan(t.Context()) // must not panic
 	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("corrupt state should start cold and emit the run; got %d", got)
 	}
@@ -379,7 +379,7 @@ func TestNewDefaultsNowToWallClock(t *testing.T) {
 		Lookback: 72 * time.Hour,
 	}) // Now intentionally omitted
 
-	if !c.Scan(context.Background()) {
+	if !c.Scan(t.Context()) {
 		t.Errorf("Scan with the default wall-clock now should be healthy")
 	}
 }
@@ -488,7 +488,7 @@ func TestPruneBoundaryRetainsRunsAtCutoff(t *testing.T) {
 		runs:  map[string][]model.WorkflowRun{"cplieger/x": {atCutoff, justBefore}},
 	}
 	c := newCollector(t, fc, nil)
-	c.Scan(context.Background())
+	c.Scan(t.Context())
 	if _, ok := c.seen[1]; !ok {
 		t.Errorf("run 1 (created at exactly cutoff) should be retained, not pruned")
 	}
@@ -526,7 +526,7 @@ func TestStateOversizedStartsCold(t *testing.T) {
 		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
-	c.Scan(context.Background()) // must not OOM or panic
+	c.Scan(t.Context()) // must not OOM or panic
 	if got := rec.CountExact("dedup state corrupt; starting cold"); got != 1 {
 		t.Errorf("truncated oversized state should warn corrupt-and-cold once; got %d", got)
 	}
@@ -554,7 +554,7 @@ func TestStateNullJSONDoesNotNilMap(t *testing.T) {
 		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
-	c.Scan(context.Background()) // must not panic on a nil-map insert
+	c.Scan(t.Context()) // must not panic on a nil-map insert
 	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("null state should start cold and emit the run; got %d", got)
 	}
@@ -579,7 +579,7 @@ func TestSavePersistsOnlyPrunedSet(t *testing.T) {
 		Client: fc, Logger: slog.New(slog.NewTextHandler(testWriter{t}, nil)),
 		Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath,
 	})
-	c1.Scan(context.Background())
+	c1.Scan(t.Context())
 
 	// A fresh "process" reloads the persisted set; only the post-prune set
 	// was saved, so the beyond-lookback run must not reappear.
@@ -621,8 +621,8 @@ func TestSaveStateMergesConcurrentWriters(t *testing.T) {
 
 	c1 := mk(1)
 	c2 := mk(2) // constructed before c1 saves: loads the same empty state
-	c1.Scan(context.Background())
-	c2.Scan(context.Background()) // must merge run 1 from disk, not overwrite it
+	c1.Scan(t.Context())
+	c2.Scan(t.Context()) // must merge run 1 from disk, not overwrite it
 
 	c3 := mk(3) // fresh "process": reloads the merged set
 	if _, ok := c3.seen[1]; !ok {
@@ -652,7 +652,7 @@ func TestLogKeysMatchModelTags(t *testing.T) {
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
-	c.Scan(context.Background())
+	c.Scan(t.Context())
 
 	cases := []struct {
 		signal any
@@ -723,7 +723,7 @@ func TestSnapshotsFilterForeignOwnerRepos(t *testing.T) {
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
-	c.Scan(context.Background())
+	c.Scan(t.Context())
 
 	if got := rec.CountExact("open pull request"); got != 1 {
 		t.Errorf("emitted %d PR lines, want 1 (foreign-owner PRs must be filtered)", got)
@@ -760,7 +760,7 @@ func TestSaveStateWriteFailureToleratedAndWarns(t *testing.T) {
 		Client: fc, Logger: slog.New(rec), Now: fixedNow,
 		Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath,
 	})
-	if !c.Scan(context.Background()) {
+	if !c.Scan(t.Context()) {
 		t.Errorf("a best-effort state-save failure must not flip the scan unhealthy")
 	}
 	if got := rec.CountExact("dedup state save failed"); got != 1 {
@@ -820,7 +820,7 @@ func TestCollectRunsEmitsPartialRunsOnError(t *testing.T) {
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
-	c.Scan(context.Background())
+	c.Scan(t.Context())
 
 	if got := rec.CountExact("workflow run"); got != 1 {
 		t.Errorf("emitted %d workflow-run lines, want 1 (the partial set must be emitted even though the list errored)", got)

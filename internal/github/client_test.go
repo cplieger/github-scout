@@ -2,7 +2,6 @@ package github
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -45,7 +44,7 @@ func TestListReposFiltersOwnerAndArchived(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	repos, err := newTestClient(t, srv).ListRepos(context.Background(), "cplieger")
+	repos, err := newTestClient(t, srv).ListRepos(t.Context(), "cplieger")
 	if err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}
@@ -91,7 +90,7 @@ func TestListReposPaginates(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	repos, err := newTestClient(t, srv).ListRepos(context.Background(), "cplieger")
+	repos, err := newTestClient(t, srv).ListRepos(t.Context(), "cplieger")
 	if err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}
@@ -127,7 +126,7 @@ func TestListRunsAllConclusions(t *testing.T) {
 	defer srv.Close()
 
 	repo := model.Repo{Owner: "cplieger", Name: "x"}
-	runs, err := newTestClient(t, srv).ListRuns(context.Background(), repo, time.Now().Add(-24*time.Hour))
+	runs, err := newTestClient(t, srv).ListRuns(t.Context(), repo, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
 	}
@@ -179,7 +178,7 @@ func TestListRunsPaginates(t *testing.T) {
 	defer srv.Close()
 
 	repo := model.Repo{Owner: "cplieger", Name: "x"}
-	runs, err := newTestClient(t, srv).ListRuns(context.Background(), repo, time.Now().Add(-24*time.Hour))
+	runs, err := newTestClient(t, srv).ListRuns(t.Context(), repo, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
 	}
@@ -193,11 +192,11 @@ func TestListRunsPaginates(t *testing.T) {
 
 func TestUnsafeSegmentsRejected(t *testing.T) {
 	c := NewClient(httpx.NewClient(time.Second), "tok", nil, slog.Default(), "")
-	if _, err := c.ListRepos(context.Background(), "../evil"); err == nil {
+	if _, err := c.ListRepos(t.Context(), "../evil"); err == nil {
 		t.Errorf("ListRepos accepted unsafe owner")
 	}
 	bad := model.Repo{Owner: "ok", Name: "../evil"}
-	if _, err := c.ListRuns(context.Background(), bad, time.Now()); err == nil {
+	if _, err := c.ListRuns(t.Context(), bad, time.Now()); err == nil {
 		t.Errorf("ListRuns accepted unsafe repo name")
 	}
 }
@@ -238,7 +237,7 @@ func TestSearchOpenPRsCrossRepo(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prs, err := newTestClient(t, srv).SearchOpenPRs(context.Background(), "cplieger", "-author:app/renovate")
+	prs, err := newTestClient(t, srv).SearchOpenPRs(t.Context(), "cplieger", "-author:app/renovate")
 	if err != nil {
 		t.Fatalf("SearchOpenPRs: %v", err)
 	}
@@ -269,7 +268,7 @@ func TestSearchOpenIssuesJoinsLabels(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	issues, err := newTestClient(t, srv).SearchOpenIssues(context.Background(), "cplieger", "-label:renovate")
+	issues, err := newTestClient(t, srv).SearchOpenIssues(t.Context(), "cplieger", "-label:renovate")
 	if err != nil {
 		t.Fatalf("SearchOpenIssues: %v", err)
 	}
@@ -290,7 +289,7 @@ func TestListCodeScanningAlerts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
 	if err != nil {
 		t.Fatalf("ListCodeScanningAlerts: %v", err)
 	}
@@ -309,7 +308,7 @@ func TestCodeScanning404IsNoCodeScanning(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
 	if !errors.Is(err, model.ErrNoCodeScanning) {
 		t.Errorf("404 should map to model.ErrNoCodeScanning, got: %v", err)
 	}
@@ -328,7 +327,7 @@ func TestCodeScanning403IsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	_, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
 	if err == nil {
 		t.Errorf("403 must surface as an error (silent zero-alerts is a security false-negative)")
 	}
@@ -357,7 +356,7 @@ func TestStatus401MapsTokenInvalid(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(t, srv).ListRepos(context.Background(), "cplieger")
+	_, err := newTestClient(t, srv).ListRepos(t.Context(), "cplieger")
 	if !errors.Is(err, model.ErrTokenInvalid) {
 		t.Errorf("401 should map to model.ErrTokenInvalid, got: %v", err)
 	}
@@ -377,7 +376,7 @@ func TestStatus429MapsRateLimited(t *testing.T) {
 	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default(), "")
 	c.baseURL = srv.URL
 
-	_, err := c.ListRepos(context.Background(), "cplieger")
+	_, err := c.ListRepos(t.Context(), "cplieger")
 	if !errors.Is(err, model.ErrRateLimited) {
 		t.Errorf("429 should map to model.ErrRateLimited, got: %v", err)
 	}
@@ -445,7 +444,7 @@ func TestListReposStopsAtMaxPages(t *testing.T) {
 		`{"name":"r%d","owner":{"login":"cplieger"}}`))
 	defer srv.Close()
 
-	repos, err := newTestClient(t, srv).ListRepos(context.Background(), "cplieger")
+	repos, err := newTestClient(t, srv).ListRepos(t.Context(), "cplieger")
 	if err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}
@@ -464,7 +463,7 @@ func TestListRunsStopsAtMaxPages(t *testing.T) {
 		`{"id":%d,"conclusion":"success","created_at":"2026-06-20T10:00:00Z"}`))
 	defer srv.Close()
 
-	runs, err := newTestClient(t, srv).ListRuns(context.Background(),
+	runs, err := newTestClient(t, srv).ListRuns(t.Context(),
 		model.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
@@ -484,7 +483,7 @@ func TestSearchStopsAtMaxPages(t *testing.T) {
 		`{"number":%d,"repository_url":"https://api.github.com/repos/cplieger/a","user":{"login":"cplieger"}}`))
 	defer srv.Close()
 
-	prs, err := newTestClient(t, srv).SearchOpenPRs(context.Background(), "cplieger", "")
+	prs, err := newTestClient(t, srv).SearchOpenPRs(t.Context(), "cplieger", "")
 	if err != nil {
 		t.Fatalf("SearchOpenPRs: %v", err)
 	}
@@ -503,7 +502,7 @@ func TestListCodeScanningAlertsStopsAtMaxPages(t *testing.T) {
 		`{"number":%d,"rule":{"id":"go/x"},"tool":{"name":"CodeQL"}}`))
 	defer srv.Close()
 
-	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(),
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(),
 		model.Repo{Owner: "cplieger", Name: "a"})
 	if err != nil {
 		t.Fatalf("ListCodeScanningAlerts: %v", err)
@@ -550,14 +549,14 @@ func TestCodeScanningNotFound(t *testing.T) {
 func TestUnsafeSegmentsRejectedSearchAndCodeScanning(t *testing.T) {
 	c := NewClient(httpx.NewClient(time.Second), "tok", nil, slog.Default(), "")
 
-	if _, err := c.SearchOpenPRs(context.Background(), "../evil", ""); err == nil {
+	if _, err := c.SearchOpenPRs(t.Context(), "../evil", ""); err == nil {
 		t.Errorf("SearchOpenPRs accepted unsafe owner")
 	}
-	if _, err := c.SearchOpenIssues(context.Background(), "../evil", ""); err == nil {
+	if _, err := c.SearchOpenIssues(t.Context(), "../evil", ""); err == nil {
 		t.Errorf("SearchOpenIssues accepted unsafe owner")
 	}
 	bad := model.Repo{Owner: "ok", Name: "../evil"}
-	if _, err := c.ListCodeScanningAlerts(context.Background(), bad); err == nil {
+	if _, err := c.ListCodeScanningAlerts(t.Context(), bad); err == nil {
 		t.Errorf("ListCodeScanningAlerts accepted unsafe repo name")
 	}
 }
@@ -577,7 +576,7 @@ func TestSearchIncompleteResultsErrors(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prs, err := newTestClient(t, srv).SearchOpenPRs(context.Background(), "cplieger", "")
+	prs, err := newTestClient(t, srv).SearchOpenPRs(t.Context(), "cplieger", "")
 	if err == nil {
 		t.Fatalf("SearchOpenPRs must error when GitHub returns incomplete_results (a timed-out search is not a confirmed-empty result)")
 	}
@@ -607,7 +606,7 @@ func TestCodeScanning404MidPaginationIsRealError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	_, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
 	if err == nil {
 		t.Fatalf("a 404 mid-pagination (after alerts were collected) must be a real error, not silently swallowed as no-code-scanning")
 	}
@@ -628,7 +627,7 @@ func TestGetJSONSurfacesDecodeError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	prs, err := newTestClient(t, srv).SearchOpenPRs(context.Background(), "cplieger", "")
+	prs, err := newTestClient(t, srv).SearchOpenPRs(t.Context(), "cplieger", "")
 	if err == nil {
 		t.Fatalf("SearchOpenPRs must error on a malformed JSON body, not read it as zero results")
 	}
@@ -660,7 +659,7 @@ func TestListRunsReturnsPartialOnMidPaginationError(t *testing.T) {
 	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default(), "")
 	c.baseURL = srv.URL
 
-	runs, err := c.ListRuns(context.Background(), model.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
+	runs, err := c.ListRuns(t.Context(), model.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
 	if err == nil {
 		t.Fatalf("ListRuns must error when a page fetch fails mid-pagination")
 	}
@@ -693,7 +692,7 @@ func TestGetJSON_routes_retry_logs_to_client_logger(t *testing.T) {
 		[]httpx.Option{httpx.WithBaseDelay(time.Millisecond)}, logger, "")
 	c.baseURL = srv.URL
 
-	if _, err := c.ListRepos(context.Background(), "cplieger"); err != nil {
+	if _, err := c.ListRepos(t.Context(), "cplieger"); err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}
 	if !strings.Contains(buf.String(), "failed, retrying") {
@@ -716,7 +715,7 @@ func TestListCodeScanningAlertsRuleDescriptionFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(context.Background(), model.Repo{Owner: "cplieger", Name: "a"})
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
 	if err != nil {
 		t.Fatalf("ListCodeScanningAlerts: %v", err)
 	}
@@ -742,7 +741,7 @@ func TestListReposOwnerMatchIsCaseInsensitive(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	repos, err := newTestClient(t, srv).ListRepos(context.Background(), "Cplieger")
+	repos, err := newTestClient(t, srv).ListRepos(t.Context(), "Cplieger")
 	if err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}

@@ -41,7 +41,7 @@ func TestRunScan_recoversPanicAsUnhealthy(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Owner:  "cplieger",
 	})
-	got := runScan(context.Background(), collector)
+	got := runScan(t.Context(), collector)
 	if got {
 		t.Errorf("runScan(panicking collector) = true, want false")
 	}
@@ -75,7 +75,7 @@ func TestRunScan_healthyScanReturnsTrue(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Owner:  "cplieger",
 	})
-	if got := runScan(context.Background(), collector); !got {
+	if got := runScan(t.Context(), collector); !got {
 		t.Errorf("runScan(healthy collector) = false, want true")
 	}
 }
@@ -88,7 +88,7 @@ func TestRunScheduled_firstScanRunsImmediatelyAndSetsMarker(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Owner:  "cplieger",
 	})
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -127,7 +127,7 @@ func TestRunScheduled_failingScanStillRefreshesLiveness(t *testing.T) {
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 		Owner:  "cplieger",
 	})
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
