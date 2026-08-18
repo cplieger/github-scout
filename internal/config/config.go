@@ -16,6 +16,7 @@
 package config
 
 import (
+	"cmp"
 	"log/slog"
 	"os"
 	"strings"
@@ -104,8 +105,8 @@ func Load() Config {
 		Owner:                    strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
 		ExcludeRepos:             parseExcludes(os.Getenv("EXCLUDE_REPOS")),
 		CodeScanningExcludeRepos: parseExcludes(os.Getenv("CODE_SCANNING_EXCLUDE_REPOS")),
-		PRExclude:                envx.String("PR_EXCLUDE_QUERY", DefaultPRExclude),
-		IssueExclude:             envx.String("ISSUE_EXCLUDE_QUERY", DefaultIssueExclude),
+		PRExclude:                cmp.Or(envx.String("PR_EXCLUDE_QUERY"), DefaultPRExclude),
+		IssueExclude:             cmp.Or(envx.String("ISSUE_EXCLUDE_QUERY"), DefaultIssueExclude),
 		ScanInterval:             ScanInterval(),
 		Lookback:                 time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
 		LogLevel:                 lvl,
