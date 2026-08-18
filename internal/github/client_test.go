@@ -12,15 +12,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/github-scout/internal/model"
-	"github.com/cplieger/httpx/v4"
+	"github.com/cplieger/github-scout/internal/ghsignal"
+	"github.com/cplieger/httpx/v5"
 )
 
 // newTestClient wires a Client at the test server's URL with a short-timeout
 // http.Client so tests never hang.
 func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 	t.Helper()
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default()})
 	c.baseURL = srv.URL
 	return c
 }
@@ -125,7 +125,7 @@ func TestListRunsAllConclusions(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	repo := model.Repo{Owner: "cplieger", Name: "x"}
+	repo := ghsignal.Repo{Owner: "cplieger", Name: "x"}
 	runs, err := newTestClient(t, srv).ListRuns(t.Context(), repo, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
@@ -136,7 +136,7 @@ func TestListRunsAllConclusions(t *testing.T) {
 	if len(runs) != 3 {
 		t.Fatalf("got %d runs, want 3 (all conclusions, not just failures)", len(runs))
 	}
-	byConclusion := map[string]model.WorkflowRun{}
+	byConclusion := map[string]ghsignal.WorkflowRun{}
 	for _, r := range runs {
 		byConclusion[r.Conclusion] = r
 	}
@@ -177,7 +177,7 @@ func TestListRunsPaginates(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	repo := model.Repo{Owner: "cplieger", Name: "x"}
+	repo := ghsignal.Repo{Owner: "cplieger", Name: "x"}
 	runs, err := newTestClient(t, srv).ListRuns(t.Context(), repo, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
@@ -191,11 +191,11 @@ func TestListRunsPaginates(t *testing.T) {
 }
 
 func TestUnsafeSegmentsRejected(t *testing.T) {
-	c := NewClient(httpx.NewClient(time.Second), "tok", nil, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(time.Second), Token: "tok", Logger: slog.Default()})
 	if _, err := c.ListRepos(t.Context(), "../evil"); err == nil {
 		t.Errorf("ListRepos accepted unsafe owner")
 	}
-	bad := model.Repo{Owner: "ok", Name: "../evil"}
+	bad := ghsignal.Repo{Owner: "ok", Name: "../evil"}
 	if _, err := c.ListRuns(t.Context(), bad, time.Now()); err == nil {
 		t.Errorf("ListRuns accepted unsafe repo name")
 	}
@@ -289,7 +289,7 @@ func TestListCodeScanningAlerts(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), ghsignal.Repo{Owner: "cplieger", Name: "a"})
 	if err != nil {
 		t.Fatalf("ListCodeScanningAlerts: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestListCodeScanningAlerts(t *testing.T) {
 
 func TestCodeScanning404IsNoCodeScanning(t *testing.T) {
 	// A repo that never ran code scanning returns 404 — the client maps it to
-	// the benign model.ErrNoCodeScanning sentinel (NOT a read failure, and NOT
+	// the benign ghsignal.ErrNoCodeScanning sentinel (NOT a read failure, and NOT
 	// a silent clean read), so the collector can exclude it from the "blind"
 	// calculation. It still yields no alerts.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -308,9 +308,9 @@ func TestCodeScanning404IsNoCodeScanning(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
-	if !errors.Is(err, model.ErrNoCodeScanning) {
-		t.Errorf("404 should map to model.ErrNoCodeScanning, got: %v", err)
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), ghsignal.Repo{Owner: "cplieger", Name: "a"})
+	if !errors.Is(err, ghsignal.ErrNoCodeScanning) {
+		t.Errorf("404 should map to ghsignal.ErrNoCodeScanning, got: %v", err)
 	}
 	if len(alerts) != 0 {
 		t.Errorf("404 should yield no alerts, got %d", len(alerts))
@@ -327,18 +327,18 @@ func TestCodeScanning403IsError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
+	_, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), ghsignal.Repo{Owner: "cplieger", Name: "a"})
 	if err == nil {
 		t.Errorf("403 must surface as an error (silent zero-alerts is a security false-negative)")
 	}
-	if errors.Is(err, model.ErrNoCodeScanning) {
+	if errors.Is(err, ghsignal.ErrNoCodeScanning) {
 		t.Errorf("403 must NOT be mapped to the benign no-code-scanning sentinel")
 	}
 	// A 403 is per-repo (one private repo without GHAS, a missing scope), not
 	// an org-wide class, so it must map to NEITHER systemic sentinel; the
 	// collector then treats it as a plain per-repo failure that escalates only
 	// when code scanning is blind for every repo that has it.
-	if errors.Is(err, model.ErrTokenInvalid) || errors.Is(err, model.ErrRateLimited) {
+	if errors.Is(err, ghsignal.ErrTokenInvalid) || errors.Is(err, ghsignal.ErrRateLimited) {
 		t.Errorf("403 must not map to a systemic sentinel, got: %v", err)
 	}
 }
@@ -347,7 +347,7 @@ func TestCodeScanning403IsError(t *testing.T) {
 // systemic status→sentinel mapping the collector's escalation depends on. They
 // are the boundary half of the contract: the github client is the single place
 // that turns an HTTP status into meaning, so internal/collect can classify on
-// model sentinels without importing the HTTP transport. A regression that
+// ghsignal sentinels without importing the HTTP transport. A regression that
 // stopped mapping 401/429 would silently downgrade an org-wide credential or
 // rate-limit failure to a per-repo blip and fail to page.
 func TestStatus401MapsTokenInvalid(t *testing.T) {
@@ -357,10 +357,10 @@ func TestStatus401MapsTokenInvalid(t *testing.T) {
 	defer srv.Close()
 
 	_, err := newTestClient(t, srv).ListRepos(t.Context(), "cplieger")
-	if !errors.Is(err, model.ErrTokenInvalid) {
-		t.Errorf("401 should map to model.ErrTokenInvalid, got: %v", err)
+	if !errors.Is(err, ghsignal.ErrTokenInvalid) {
+		t.Errorf("401 should map to ghsignal.ErrTokenInvalid, got: %v", err)
 	}
-	if errors.Is(err, model.ErrRateLimited) {
+	if errors.Is(err, ghsignal.ErrRateLimited) {
 		t.Errorf("401 must not also be ErrRateLimited")
 	}
 }
@@ -373,14 +373,14 @@ func TestStatus429MapsRateLimited(t *testing.T) {
 
 	// One attempt only: a 429 is retryable, and the test only needs to observe
 	// the post-exhaustion mapping, not sit through backoff.
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", RetryOpts: []httpx.Option{httpx.WithMaxAttempts(1)}, Logger: slog.Default()})
 	c.baseURL = srv.URL
 
 	_, err := c.ListRepos(t.Context(), "cplieger")
-	if !errors.Is(err, model.ErrRateLimited) {
-		t.Errorf("429 should map to model.ErrRateLimited, got: %v", err)
+	if !errors.Is(err, ghsignal.ErrRateLimited) {
+		t.Errorf("429 should map to ghsignal.ErrRateLimited, got: %v", err)
 	}
-	if errors.Is(err, model.ErrTokenInvalid) {
+	if errors.Is(err, ghsignal.ErrTokenInvalid) {
 		t.Errorf("429 must not also be ErrTokenInvalid")
 	}
 }
@@ -400,7 +400,7 @@ func TestRepoFromAPIURL(t *testing.T) {
 
 func TestNewClientNilLoggerDefaults(t *testing.T) {
 	// A nil logger must fall back to slog.Default, never be left nil.
-	c := NewClient(httpx.NewClient(time.Second), "tok", nil, nil, "")
+	c := NewClient(Options{HTTP: httpx.NewClient(time.Second), Token: "tok"})
 	if c.logger == nil {
 		t.Errorf("NewClient with nil logger left c.logger nil; want slog.Default fallback")
 	}
@@ -464,7 +464,7 @@ func TestListRunsStopsAtMaxPages(t *testing.T) {
 	defer srv.Close()
 
 	runs, err := newTestClient(t, srv).ListRuns(t.Context(),
-		model.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
+		ghsignal.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
 	if err != nil {
 		t.Fatalf("ListRuns: %v", err)
 	}
@@ -503,7 +503,7 @@ func TestListCodeScanningAlertsStopsAtMaxPages(t *testing.T) {
 	defer srv.Close()
 
 	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(),
-		model.Repo{Owner: "cplieger", Name: "a"})
+		ghsignal.Repo{Owner: "cplieger", Name: "a"})
 	if err != nil {
 		t.Fatalf("ListCodeScanningAlerts: %v", err)
 	}
@@ -547,7 +547,7 @@ func TestCodeScanningNotFound(t *testing.T) {
 // traversal/injection segment (../evil) must be rejected before URL
 // construction in each.
 func TestUnsafeSegmentsRejectedSearchAndCodeScanning(t *testing.T) {
-	c := NewClient(httpx.NewClient(time.Second), "tok", nil, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(time.Second), Token: "tok", Logger: slog.Default()})
 
 	if _, err := c.SearchOpenPRs(t.Context(), "../evil", ""); err == nil {
 		t.Errorf("SearchOpenPRs accepted unsafe owner")
@@ -555,7 +555,7 @@ func TestUnsafeSegmentsRejectedSearchAndCodeScanning(t *testing.T) {
 	if _, err := c.SearchOpenIssues(t.Context(), "../evil", ""); err == nil {
 		t.Errorf("SearchOpenIssues accepted unsafe owner")
 	}
-	bad := model.Repo{Owner: "ok", Name: "../evil"}
+	bad := ghsignal.Repo{Owner: "ok", Name: "../evil"}
 	if _, err := c.ListCodeScanningAlerts(t.Context(), bad); err == nil {
 		t.Errorf("ListCodeScanningAlerts accepted unsafe repo name")
 	}
@@ -589,7 +589,7 @@ func TestSearchIncompleteResultsErrors(t *testing.T) {
 }
 
 // TestCodeScanning404MidPaginationIsRealError pins the len(alerts)==0 guard in
-// ListCodeScanningAlerts: a 404 is mapped to the benign model.ErrNoCodeScanning
+// ListCodeScanningAlerts: a 404 is mapped to the benign ghsignal.ErrNoCodeScanning
 // ONLY before any alert is collected. A 404 on page 2+ (after page 1 returned a
 // full page) is a real read failure and must surface as a wrapped error, never
 // be swallowed as "no code scanning" (which would drop the alerts already read
@@ -606,12 +606,12 @@ func TestCodeScanning404MidPaginationIsRealError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
+	_, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), ghsignal.Repo{Owner: "cplieger", Name: "a"})
 	if err == nil {
 		t.Fatalf("a 404 mid-pagination (after alerts were collected) must be a real error, not silently swallowed as no-code-scanning")
 	}
-	if errors.Is(err, model.ErrNoCodeScanning) {
-		t.Errorf("a mid-pagination 404 must NOT map to model.ErrNoCodeScanning: err = %v", err)
+	if errors.Is(err, ghsignal.ErrNoCodeScanning) {
+		t.Errorf("a mid-pagination 404 must NOT map to ghsignal.ErrNoCodeScanning: err = %v", err)
 	}
 }
 
@@ -656,10 +656,10 @@ func TestListRunsReturnsPartialOnMidPaginationError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", []httpx.Option{httpx.WithMaxAttempts(1)}, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", RetryOpts: []httpx.Option{httpx.WithMaxAttempts(1)}, Logger: slog.Default()})
 	c.baseURL = srv.URL
 
-	runs, err := c.ListRuns(t.Context(), model.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
+	runs, err := c.ListRuns(t.Context(), ghsignal.Repo{Owner: "cplieger", Name: "x"}, time.Now().Add(-24*time.Hour))
 	if err == nil {
 		t.Fatalf("ListRuns must error when a page fetch fails mid-pagination")
 	}
@@ -688,8 +688,7 @@ func TestGetJSON_routes_retry_logs_to_client_logger(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	c := NewClient(httpx.NewClient(5*time.Second), "tok",
-		[]httpx.Option{httpx.WithBaseDelay(time.Millisecond)}, logger, "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "tok", RetryOpts: []httpx.Option{httpx.WithBaseDelay(time.Millisecond)}, Logger: logger})
 	c.baseURL = srv.URL
 
 	if _, err := c.ListRepos(t.Context(), "cplieger"); err != nil {
@@ -715,7 +714,7 @@ func TestListCodeScanningAlertsRuleDescriptionFallback(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "a"})
+	alerts, err := newTestClient(t, srv).ListCodeScanningAlerts(t.Context(), ghsignal.Repo{Owner: "cplieger", Name: "a"})
 	if err != nil {
 		t.Fatalf("ListCodeScanningAlerts: %v", err)
 	}

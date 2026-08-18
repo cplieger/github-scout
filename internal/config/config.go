@@ -21,9 +21,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/envx"
+	"github.com/cplieger/envx/v2"
 	"github.com/cplieger/github-scout/internal/urlsafe"
-	"github.com/cplieger/scheduler/v3"
+	"github.com/cplieger/scheduler/v4"
 	"github.com/cplieger/slogx"
 )
 
@@ -185,7 +185,7 @@ func parseExcludes(s string) map[string]bool {
 // entirely. The one remaining comparison (clamped != v, gating the
 // over-max warning) is exercised by TestClampedIntWarnsOverMax, which
 // captures the slog output — so its boundary mutant is killable too.
-func clampedInt(key string, def, lo, hi int) int {
+func clampedInt(key envx.Key, def, lo, hi int) int {
 	v, ok, err := envx.IntStrict(key)
 	if err != nil || !ok || v < 0 {
 		return def

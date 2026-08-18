@@ -3,7 +3,7 @@
 // actionable GitHub signals across all of an owner's repos and emits them
 // as structured log lines for Alloy to ship to Loki.
 //
-// Two emission models (see internal/model):
+// Two emission models (see internal/ghsignal):
 //
 //   - Event-once (Actions runs): each completed run ID is emitted a single
 //     time as msg="workflow run" with its conclusion, so a plain LogQL
@@ -41,8 +41,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/github-scout/internal/model"
-	"github.com/cplieger/scheduler/v3"
+	"github.com/cplieger/github-scout/internal/ghsignal"
+	"github.com/cplieger/scheduler/v4"
 )
 
 // Collector holds the cross-scan state: the GitHub client, scan
@@ -65,11 +65,11 @@ type Collector struct {
 // apiClient is the consumer-side view of the GitHub client the collector
 // needs. *github.Client satisfies it in production; tests pass a fake.
 type apiClient interface {
-	ListRepos(ctx context.Context, owner string) ([]model.Repo, error)
-	ListRuns(ctx context.Context, repo model.Repo, since time.Time) ([]model.WorkflowRun, error)
-	SearchOpenPRs(ctx context.Context, owner, exclude string) ([]model.PullRequest, error)
-	SearchOpenIssues(ctx context.Context, owner, exclude string) ([]model.Issue, error)
-	ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([]model.CodeScanningAlert, error)
+	ListRepos(ctx context.Context, owner string) ([]ghsignal.Repo, error)
+	ListRuns(ctx context.Context, repo ghsignal.Repo, since time.Time) ([]ghsignal.WorkflowRun, error)
+	SearchOpenPRs(ctx context.Context, owner, exclude string) ([]ghsignal.PullRequest, error)
+	SearchOpenIssues(ctx context.Context, owner, exclude string) ([]ghsignal.Issue, error)
+	ListCodeScanningAlerts(ctx context.Context, repo ghsignal.Repo) ([]ghsignal.CodeScanningAlert, error)
 }
 
 // Deps are the constructor arguments for New. A nil Logger falls back to
@@ -281,7 +281,7 @@ func (c *Collector) collectIssues(ctx context.Context) (int, error) {
 // msg="workflow run" with its conclusion, so the dashboard filters that one
 // stream for the failures view and computes the failure rate — no
 // per-conclusion fan-out needed.
-func (c *Collector) collectRuns(ctx context.Context, repo *model.Repo, cutoff time.Time) (newRuns, newFailures int, err error) {
+func (c *Collector) collectRuns(ctx context.Context, repo *ghsignal.Repo, cutoff time.Time) (newRuns, newFailures int, err error) {
 	runs, err := c.client.ListRuns(ctx, *repo, cutoff)
 	if err != nil {
 		if isShutdown(err) {
@@ -303,7 +303,7 @@ func (c *Collector) collectRuns(ctx context.Context, repo *model.Repo, cutoff ti
 			"run_id", run.RunID, "url", run.URL,
 			"created_at", run.CreatedAt.UTC().Format(time.RFC3339))
 		newRuns++
-		if model.IsFailureConclusion(run.Conclusion) {
+		if ghsignal.IsFailureConclusion(run.Conclusion) {
 			newFailures++
 		}
 	}
@@ -312,16 +312,16 @@ func (c *Collector) collectRuns(ctx context.Context, repo *model.Repo, cutoff ti
 
 // collectAlerts emits the current code-scanning-alert snapshot for repo and
 // returns the count plus any error. A repo that never ran code scanning yields
-// model.ErrNoCodeScanning (GitHub's 404) — a benign "no data" outcome the
+// ghsignal.ErrNoCodeScanning (GitHub's 404) — a benign "no data" outcome the
 // collector stays silent on and Scan counts as neither readable nor blind. A
 // 403 (Advanced Security off, a missing token scope, or a rate limit) is a real
 // read failure surfaced as a warning, so Scan can fold a blind code-scanning
 // read into the integrity verdict rather than reporting a false zero.
-func (c *Collector) collectAlerts(ctx context.Context, repo *model.Repo) (int, error) {
+func (c *Collector) collectAlerts(ctx context.Context, repo *ghsignal.Repo) (int, error) {
 	alerts, err := c.client.ListCodeScanningAlerts(ctx, *repo)
 	if err != nil {
 		switch {
-		case errors.Is(err, model.ErrNoCodeScanning):
+		case errors.Is(err, ghsignal.ErrNoCodeScanning):
 			// Benign: this repo has no code scanning. Not a failure and not a
 			// readable signal — Scan's integrity verdict ignores it.
 		case isShutdown(err):

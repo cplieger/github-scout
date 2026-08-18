@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/github-scout/internal/model"
-	"github.com/cplieger/httpx/v4"
+	"github.com/cplieger/github-scout/internal/ghsignal"
+	"github.com/cplieger/httpx/v5"
 )
 
 // condServer is an httptest server that serves body with an ETag and answers
@@ -63,7 +63,7 @@ const condRepoBody = `[{"name":"keep","owner":{"login":"cplieger"},"private":tru
 // 304, and re-serves the identical repo snapshot from the cached items.
 func TestListRepos_conditionalRevalidation(t *testing.T) {
 	cs := newCondServer(t, `W/"repos-v1"`, condRepoBody)
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default()})
 	c.baseURL = cs.srv.URL
 
 	first, err := c.ListRepos(t.Context(), "cplieger")
@@ -94,9 +94,9 @@ func TestListRepos_conditionalRevalidation(t *testing.T) {
 // force a refetch).
 func TestListCodeScanningAlerts_conditionalRevalidation(t *testing.T) {
 	cs := newCondServer(t, `W/"alerts-v1"`, `[]`)
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default()})
 	c.baseURL = cs.srv.URL
-	repo := model.Repo{Owner: "cplieger", Name: "x"}
+	repo := ghsignal.Repo{Owner: "cplieger", Name: "x"}
 
 	for i := range 2 {
 		alerts, err := c.ListCodeScanningAlerts(t.Context(), repo)
@@ -120,13 +120,13 @@ func TestConditional_cachePersistsAcrossClients(t *testing.T) {
 	cs := newCondServer(t, `W/"repos-v1"`, condRepoBody)
 	path := filepath.Join(t.TempDir(), "cond-cache.json")
 
-	c1 := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), path)
+	c1 := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default(), CondCachePath: path})
 	c1.baseURL = cs.srv.URL
 	if _, err := c1.ListRepos(t.Context(), "cplieger"); err != nil {
 		t.Fatalf("ListRepos (client 1): %v", err)
 	}
 
-	c2 := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), path)
+	c2 := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default(), CondCachePath: path})
 	c2.baseURL = cs.srv.URL
 	repos, err := c2.ListRepos(t.Context(), "cplieger")
 	if err != nil {
@@ -150,7 +150,7 @@ func TestConditional_corruptCacheFileStartsCold(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), path)
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default(), CondCachePath: path})
 	c.baseURL = cs.srv.URL
 	if _, err := c.ListRepos(t.Context(), "cplieger"); err != nil {
 		t.Fatalf("ListRepos: %v", err)
@@ -169,7 +169,7 @@ func TestConditional_corruptCacheFileStartsCold(t *testing.T) {
 func TestConditional_noValidatorsMeansNoCaching(t *testing.T) {
 	cs := newCondServer(t, `W/"unused"`, condRepoBody)
 	cs.sendETag = false
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default()})
 	c.baseURL = cs.srv.URL
 
 	for i := range 2 {
@@ -194,7 +194,7 @@ func TestConditional_304WithoutCacheRefetchesOnce(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default()})
 	c.baseURL = srv.URL
 	_, err := c.ListRepos(t.Context(), "cplieger")
 	if err == nil {
@@ -227,18 +227,17 @@ func TestConditional_statusMapping(t *testing.T) {
 				w.WriteHeader(tt.status)
 			}))
 			defer srv.Close()
-			c := NewClient(httpx.NewClient(5*time.Second), "test-token",
-				[]httpx.Option{httpx.WithMaxAttempts(1), httpx.WithBaseDelay(time.Millisecond)}, slog.Default(), "")
+			c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", RetryOpts: []httpx.Option{httpx.WithMaxAttempts(1), httpx.WithBaseDelay(time.Millisecond)}, Logger: slog.Default()})
 			c.baseURL = srv.URL
 
 			_, err := c.ListRepos(t.Context(), "cplieger")
 			if err == nil {
 				t.Fatalf("ListRepos = nil error, want HTTP %d surfaced", tt.status)
 			}
-			if got := errors.Is(err, model.ErrTokenInvalid); got != tt.wantToken {
+			if got := errors.Is(err, ghsignal.ErrTokenInvalid); got != tt.wantToken {
 				t.Errorf("errors.Is(err, ErrTokenInvalid) = %v, want %v (err=%v)", got, tt.wantToken, err)
 			}
-			if got := errors.Is(err, model.ErrRateLimited); got != tt.wantLimited {
+			if got := errors.Is(err, ghsignal.ErrRateLimited); got != tt.wantLimited {
 				t.Errorf("errors.Is(err, ErrRateLimited) = %v, want %v (err=%v)", got, tt.wantLimited, err)
 			}
 		})
@@ -253,11 +252,11 @@ func TestConditional_codeScanning404StillMapsToNoCodeScanning(t *testing.T) {
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token", nil, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default()})
 	c.baseURL = srv.URL
 
-	_, err := c.ListCodeScanningAlerts(t.Context(), model.Repo{Owner: "cplieger", Name: "x"})
-	if !errors.Is(err, model.ErrNoCodeScanning) {
+	_, err := c.ListCodeScanningAlerts(t.Context(), ghsignal.Repo{Owner: "cplieger", Name: "x"})
+	if !errors.Is(err, ghsignal.ErrNoCodeScanning) {
 		t.Errorf("ListCodeScanningAlerts error = %v, want ErrNoCodeScanning", err)
 	}
 }
@@ -277,8 +276,7 @@ func TestConditional_500IsRetried(t *testing.T) {
 		_, _ = w.Write([]byte(`[]`))
 	}))
 	defer srv.Close()
-	c := NewClient(httpx.NewClient(5*time.Second), "test-token",
-		[]httpx.Option{httpx.WithBaseDelay(time.Millisecond)}, slog.Default(), "")
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", RetryOpts: []httpx.Option{httpx.WithBaseDelay(time.Millisecond)}, Logger: slog.Default()})
 	c.baseURL = srv.URL
 
 	if _, err := c.ListRepos(t.Context(), "cplieger"); err != nil {

@@ -9,29 +9,29 @@ import (
 	"time"
 
 	"github.com/cplieger/github-scout/internal/collect"
-	"github.com/cplieger/github-scout/internal/model"
+	"github.com/cplieger/github-scout/internal/ghsignal"
 	"github.com/cplieger/health"
 )
 
 type panicClient struct{}
 
-func (panicClient) ListRepos(context.Context, string) ([]model.Repo, error) {
+func (panicClient) ListRepos(context.Context, string) ([]ghsignal.Repo, error) {
 	panic("simulated scan panic")
 }
 
-func (panicClient) ListRuns(context.Context, model.Repo, time.Time) ([]model.WorkflowRun, error) {
+func (panicClient) ListRuns(context.Context, ghsignal.Repo, time.Time) ([]ghsignal.WorkflowRun, error) {
 	return nil, nil
 }
 
-func (panicClient) SearchOpenPRs(context.Context, string, string) ([]model.PullRequest, error) {
+func (panicClient) SearchOpenPRs(context.Context, string, string) ([]ghsignal.PullRequest, error) {
 	return nil, nil
 }
 
-func (panicClient) SearchOpenIssues(context.Context, string, string) ([]model.Issue, error) {
+func (panicClient) SearchOpenIssues(context.Context, string, string) ([]ghsignal.Issue, error) {
 	return nil, nil
 }
 
-func (panicClient) ListCodeScanningAlerts(context.Context, model.Repo) ([]model.CodeScanningAlert, error) {
+func (panicClient) ListCodeScanningAlerts(context.Context, ghsignal.Repo) ([]ghsignal.CodeScanningAlert, error) {
 	return nil, nil
 }
 
@@ -49,23 +49,23 @@ func TestRunScan_recoversPanicAsUnhealthy(t *testing.T) {
 
 type healthyClient struct{}
 
-func (healthyClient) ListRepos(context.Context, string) ([]model.Repo, error) {
+func (healthyClient) ListRepos(context.Context, string) ([]ghsignal.Repo, error) {
 	return nil, nil
 }
 
-func (healthyClient) ListRuns(context.Context, model.Repo, time.Time) ([]model.WorkflowRun, error) {
+func (healthyClient) ListRuns(context.Context, ghsignal.Repo, time.Time) ([]ghsignal.WorkflowRun, error) {
 	return nil, nil
 }
 
-func (healthyClient) SearchOpenPRs(context.Context, string, string) ([]model.PullRequest, error) {
+func (healthyClient) SearchOpenPRs(context.Context, string, string) ([]ghsignal.PullRequest, error) {
 	return nil, nil
 }
 
-func (healthyClient) SearchOpenIssues(context.Context, string, string) ([]model.Issue, error) {
+func (healthyClient) SearchOpenIssues(context.Context, string, string) ([]ghsignal.Issue, error) {
 	return nil, nil
 }
 
-func (healthyClient) ListCodeScanningAlerts(context.Context, model.Repo) ([]model.CodeScanningAlert, error) {
+func (healthyClient) ListCodeScanningAlerts(context.Context, ghsignal.Repo) ([]ghsignal.CodeScanningAlert, error) {
 	return nil, nil
 }
 

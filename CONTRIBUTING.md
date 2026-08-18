@@ -54,16 +54,16 @@ lives under `internal/`:
   (not the concrete client), which is the seam that lets the orchestration logic
   be unit-tested with a scripted fake while the HTTP client is tested separately
   against an `httptest` server.
-- `internal/model`: domain types (`Repo`, `WorkflowRun`, `PullRequest`, `Issue`,
+- `internal/ghsignal`: domain types (`Repo`, `WorkflowRun`, `PullRequest`, `Issue`,
   `CodeScanningAlert`). The structs are never JSON-marshaled on the emit path;
   the Loki field names are the literal slog keys emitted in `internal/collect`,
   and the JSON tags here mirror those keys for documentation. Renaming a tag
-  does not change a Loki field; renaming a slog key does. `TestLogKeysMatchModelTags`
+  does not change a Loki field; renaming a slog key does. `TestLogKeysMatchSignalTags`
   fails the build if the two drift.
 - `internal/urlsafe`: URL path-segment validation, applied to every owner/repo
   name before it is interpolated into a request URL.
 
-Dependencies flow one direction: concrete packages depend on `model` /
+Dependencies flow one direction: concrete packages depend on `ghsignal` /
 `urlsafe`, `collect` depends on its own `apiClient` interface, and `main.go` is
 the only place that wires the concrete client into the collector.
 
@@ -145,7 +145,7 @@ golangci-lint fmt ./...       # apply gofumpt + gci formatting
 
 Conventions for tests:
 
-- **Table-driven** for pure logic (config parsing/clamping, model helpers).
+- **Table-driven** for pure logic (config parsing/clamping, ghsignal helpers).
 - The **HTTP client** (`internal/github`) is tested against an `httptest`
   server: assert on the request (auth header, query params, pagination) and the
   decoded result. Never hit the real GitHub API in a test.
@@ -179,10 +179,10 @@ A few house rules the linters enforce that are easy to trip on:
 github-scout is structured so a new actionable signal (say, "a deployment was
 left pending") can be added without disturbing the failed-run path:
 
-1. **Model**: add a type in `internal/model`. Its JSON tags document the
+1. **Signal type**: add a type in `internal/ghsignal`. Its JSON tags document the
    fields, but the Loki field names are the literal slog keys you emit in
    step 4; keep the tags in sync with those keys (the four existing signals
-   are guarded by `TestLogKeysMatchModelTags`; add your new type to it).
+   are guarded by `TestLogKeysMatchSignalTags`; add your new type to it).
 2. **Client**: add a read method on `internal/github.Client` (page-count
    pagination via `getJSON`, `urlsafe` for any path segments).
 3. **Interface**: extend the consumer-side `apiClient` interface in

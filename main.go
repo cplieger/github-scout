@@ -44,8 +44,8 @@ import (
 	"github.com/cplieger/github-scout/internal/github"
 	"github.com/cplieger/github-scout/internal/urlsafe"
 	"github.com/cplieger/health"
-	"github.com/cplieger/httpx/v4"
-	"github.com/cplieger/scheduler/v3"
+	"github.com/cplieger/httpx/v5"
+	"github.com/cplieger/scheduler/v4"
 	"github.com/cplieger/slogx"
 )
 
@@ -196,7 +196,12 @@ func loadConfig() (config.Config, bool) {
 // trigger path. The caller owns CloseIdleConnections on the returned client.
 func buildCollector(cfg *config.Config) (*collect.Collector, *http.Client) {
 	httpClient := httpx.NewClient(30 * time.Second)
-	gh := github.NewClient(httpClient, cfg.Token, nil, slog.Default(), condCachePath)
+	gh := github.NewClient(github.Options{
+		HTTP:          httpClient,
+		Token:         cfg.Token,
+		Logger:        slog.Default(),
+		CondCachePath: condCachePath,
+	})
 	collector := collect.New(&collect.Deps{
 		Client:              gh,
 		Logger:              slog.Default(),
