@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/github-scout/internal/model"
+	"github.com/cplieger/github-scout/internal/ghsignal"
 )
 
 // TestScanCleanScanNotDegraded pins the happy path: when every signal is
@@ -17,9 +17,9 @@ import (
 // fields must distinguish a real blackout from.
 func TestScanCleanScanNotDegraded(t *testing.T) {
 	fc := &fakeClient{
-		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}},
-		prs:    []model.PullRequest{{Repo: "cplieger/x", Number: 1}},
-		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 2}}},
+		repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		prs:    []ghsignal.PullRequest{{Repo: "cplieger/x", Number: 1}},
+		alerts: map[string][]ghsignal.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 2}}},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
@@ -46,7 +46,7 @@ func TestScanCleanScanNotDegraded(t *testing.T) {
 // cause is the code-scanning blackout (not auth/rate-limit).
 func TestScanDegradedReportsBlindCodeScanning(t *testing.T) {
 	fc := &fakeClient{
-		repos:     []model.Repo{{Owner: "cplieger", Name: "x"}},
+		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
 		alertsErr: map[string]error{"cplieger/x": errors.New("alerts 500")},
 	}
 	c := newCollector(t, fc, nil)
@@ -73,11 +73,11 @@ func TestScanDegradedReportsBlindCodeScanning(t *testing.T) {
 // where a read still succeeds and the lone 401 is treated as transient.
 func TestScanTokenInvalidEscalates(t *testing.T) {
 	fc := &fakeClient{
-		repos:     []model.Repo{{Owner: "cplieger", Name: "x"}},
-		prsErr:    model.ErrTokenInvalid,
-		issuesErr: model.ErrTokenInvalid,
-		runsErr:   map[string]error{"cplieger/x": model.ErrTokenInvalid},
-		alertsErr: map[string]error{"cplieger/x": model.ErrTokenInvalid},
+		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		prsErr:    ghsignal.ErrTokenInvalid,
+		issuesErr: ghsignal.ErrTokenInvalid,
+		runsErr:   map[string]error{"cplieger/x": ghsignal.ErrTokenInvalid},
+		alertsErr: map[string]error{"cplieger/x": ghsignal.ErrTokenInvalid},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
@@ -104,11 +104,11 @@ func TestScanTokenInvalidEscalates(t *testing.T) {
 // 401 escalated as token_invalid.
 func TestScanSparse401NotTokenInvalid(t *testing.T) {
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
-		alerts: map[string][]model.CodeScanningAlert{
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
+		alerts: map[string][]ghsignal.CodeScanningAlert{
 			"cplieger/b": {{Repo: "cplieger/b", Number: 1}},
 		},
-		alertsErr: map[string]error{"cplieger/a": model.ErrTokenInvalid},
+		alertsErr: map[string]error{"cplieger/a": ghsignal.ErrTokenInvalid},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
@@ -134,7 +134,7 @@ func TestScanSparse401NotTokenInvalid(t *testing.T) {
 // an ERROR "scan degraded".
 func TestScanIncidentalRepoFailureNotEscalated(t *testing.T) {
 	fc := &fakeClient{
-		repos:     []model.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
+		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
 		alertsErr: map[string]error{"cplieger/a": errors.New("alerts 500")},
 	}
 	c := newCollector(t, fc, nil)
@@ -162,8 +162,8 @@ func TestScanIncidentalRepoFailureNotEscalated(t *testing.T) {
 // 403-stays-unmapped half of the contract is pinned in client_test.go.)
 func TestScanPerRepo403NotEscalated(t *testing.T) {
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
-		alerts: map[string][]model.CodeScanningAlert{
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
+		alerts: map[string][]ghsignal.CodeScanningAlert{
 			"cplieger/b": {{Repo: "cplieger/b", Number: 1}},
 		},
 		alertsErr: map[string]error{"cplieger/a": errors.New("alerts 403")},
@@ -190,7 +190,7 @@ func TestScanPerRepo403NotEscalated(t *testing.T) {
 // must escalate.
 func TestScanCodeScanningScopeBlindEscalates(t *testing.T) {
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
 		alertsErr: map[string]error{
 			"cplieger/a": errors.New("alerts 403"),
 			"cplieger/b": errors.New("alerts 403"),
@@ -215,9 +215,9 @@ func TestScanCodeScanningScopeBlindEscalates(t *testing.T) {
 // escalates — the 404 repo does not mask it.
 func TestScanNoCodeScanningExcludedFromBlind(t *testing.T) {
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "nogha"}, {Owner: "cplieger", Name: "gha"}},
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "nogha"}, {Owner: "cplieger", Name: "gha"}},
 		alertsErr: map[string]error{
-			"cplieger/nogha": model.ErrNoCodeScanning,
+			"cplieger/nogha": ghsignal.ErrNoCodeScanning,
 			"cplieger/gha":   errors.New("alerts 403"),
 		},
 	}
@@ -239,11 +239,11 @@ func TestScanNoCodeScanningExcludedFromBlind(t *testing.T) {
 // degraded at all (the 404 is neither a failure nor counted as a read).
 func TestScanNoCodeScanningCleanWhenOthersRead(t *testing.T) {
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "nogha"}, {Owner: "cplieger", Name: "gha"}},
-		alerts: map[string][]model.CodeScanningAlert{
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "nogha"}, {Owner: "cplieger", Name: "gha"}},
+		alerts: map[string][]ghsignal.CodeScanningAlert{
 			"cplieger/gha": {{Repo: "cplieger/gha", Number: 1}},
 		},
-		alertsErr: map[string]error{"cplieger/nogha": model.ErrNoCodeScanning},
+		alertsErr: map[string]error{"cplieger/nogha": ghsignal.ErrNoCodeScanning},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
@@ -262,8 +262,8 @@ func TestScanNoCodeScanningCleanWhenOthersRead(t *testing.T) {
 // every call), so it escalates with cause=rate_limited.
 func TestScanRateLimitedEscalates(t *testing.T) {
 	fc := &fakeClient{
-		repos:     []model.Repo{{Owner: "cplieger", Name: "x"}},
-		alertsErr: map[string]error{"cplieger/x": model.ErrRateLimited},
+		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		alertsErr: map[string]error{"cplieger/x": ghsignal.ErrRateLimited},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
@@ -283,7 +283,7 @@ func TestScanRateLimitedEscalates(t *testing.T) {
 // the runs-blind path (otherwise reachable only incidentally).
 func TestScanRunsBlindEscalates(t *testing.T) {
 	fc := &fakeClient{
-		repos:   []model.Repo{{Owner: "cplieger", Name: "x"}},
+		repos:   []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
 		runsErr: map[string]error{"cplieger/x": errors.New("runs 500")},
 	}
 	c := newCollector(t, fc, nil)
@@ -310,9 +310,9 @@ func TestScanRunsBlindEscalates(t *testing.T) {
 // fix this single 401 returned token_invalid.
 func TestScanSearch401IsSignalBlindNotToken(t *testing.T) {
 	fc := &fakeClient{
-		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}},
-		prsErr: model.ErrTokenInvalid,
-		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 1}}},
+		repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		prsErr: ghsignal.ErrTokenInvalid,
+		alerts: map[string][]ghsignal.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 1}}},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
@@ -335,7 +335,7 @@ func TestScanSearch401IsSignalBlindNotToken(t *testing.T) {
 // not marked degraded and does not escalate.
 func TestScanContextCancelNotDegraded(t *testing.T) {
 	fc := &fakeClient{
-		repos:     []model.Repo{{Owner: "cplieger", Name: "x"}},
+		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
 		prsErr:    context.Canceled,
 		issuesErr: context.Canceled,
 		runsErr:   map[string]error{"cplieger/x": context.Canceled},
@@ -359,7 +359,7 @@ func TestScanContextCancelNotDegraded(t *testing.T) {
 // the searches succeed, there are no per-repo reads to fail, so the scan is
 // clean — the blind checks are guarded against a spurious zero-repo escalation.
 func TestScanScannedZeroNotDegraded(t *testing.T) {
-	fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "skip"}}}
+	fc := &fakeClient{repos: []ghsignal.Repo{{Owner: "cplieger", Name: "skip"}}}
 	c := newCollector(t, fc, map[string]bool{"skip": true})
 	rec := newRecordingHandler()
 	c.logger = slog.New(rec)
@@ -384,9 +384,9 @@ func TestScanScannedZeroNotDegraded(t *testing.T) {
 func TestScanSearchFailureNonSystemicEscalatesSignalBlind(t *testing.T) {
 	clean := func() *fakeClient {
 		return &fakeClient{
-			repos:  []model.Repo{{Owner: "cplieger", Name: "x"}},
-			runs:   map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 1, Conclusion: "success", CreatedAt: fixedNow().Add(-time.Hour)}}},
-			alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 2}}},
+			repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+			runs:   map[string][]ghsignal.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 1, Conclusion: "success", CreatedAt: fixedNow().Add(-time.Hour)}}},
+			alerts: map[string][]ghsignal.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 2}}},
 		}
 	}
 	cases := []struct {
@@ -427,7 +427,7 @@ func TestScanSearchFailureNonSystemicEscalatesSignalBlind(t *testing.T) {
 // difference), and failed_signals must name every failing signal in order.
 func TestScanErrCountSumsPerRepoFailures(t *testing.T) {
 	fc := &fakeClient{
-		repos:  []model.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
+		repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
 		prsErr: errors.New("pr search 500"),
 		runsErr: map[string]error{
 			"cplieger/a": errors.New("runs 500"),
@@ -460,11 +460,11 @@ func TestScanErrCountSumsPerRepoFailures(t *testing.T) {
 // longer systemic).
 func TestScanTokenInvalidBeatsRateLimited(t *testing.T) {
 	fc := &fakeClient{
-		repos:     []model.Repo{{Owner: "cplieger", Name: "x"}},
-		prsErr:    model.ErrTokenInvalid,
-		issuesErr: model.ErrRateLimited,
-		runsErr:   map[string]error{"cplieger/x": model.ErrTokenInvalid},
-		alertsErr: map[string]error{"cplieger/x": model.ErrRateLimited},
+		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		prsErr:    ghsignal.ErrTokenInvalid,
+		issuesErr: ghsignal.ErrRateLimited,
+		runsErr:   map[string]error{"cplieger/x": ghsignal.ErrTokenInvalid},
+		alertsErr: map[string]error{"cplieger/x": ghsignal.ErrRateLimited},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()

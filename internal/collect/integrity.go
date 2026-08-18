@@ -5,7 +5,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/cplieger/github-scout/internal/model"
+	"github.com/cplieger/github-scout/internal/ghsignal"
 )
 
 // scanIntegrity accumulates per-signal collection outcomes during one scan and
@@ -36,7 +36,7 @@ import (
 // an entire signal — via the runsBlind / codeScanningBlind / signal_blind paths
 // (cause named by signal), not as token_invalid.
 //
-// A repo with no code scanning (model.ErrNoCodeScanning, GitHub's 404) counts
+// A repo with no code scanning (ghsignal.ErrNoCodeScanning, GitHub's 404) counts
 // as neither readable nor failed, so it never dilutes the "code scanning blind
 // for every repo" test: a genuine missing-scope failure (403 on every repo that
 // DOES have code scanning) still escalates even when other repos simply lack
@@ -68,8 +68,8 @@ const (
 // classify maps a collection error to an outcome and, for a real failure,
 // records whether it is a systemic (org-wide) credential or rate-limit
 // problem. The github client (the adapter) has already translated the
-// org-wide HTTP statuses into domain sentinels — 401 to model.ErrTokenInvalid,
-// 429 to model.ErrRateLimited — so this classifies on meaning and never sees an
+// org-wide HTTP statuses into domain sentinels — 401 to ghsignal.ErrTokenInvalid,
+// 429 to ghsignal.ErrRateLimited — so this classifies on meaning and never sees an
 // HTTP transport type. A 403 is deliberately NOT systemic: the client leaves it
 // as a plain error, so on code scanning (where it usually means one private
 // repo lacks GitHub Advanced Security) it is a per-repo failure that escalates
@@ -80,14 +80,14 @@ func (sc *scanIntegrity) classify(err error) outcome {
 		return outcomeOK
 	case isShutdown(err):
 		return outcomeShutdown
-	case errors.Is(err, model.ErrNoCodeScanning):
+	case errors.Is(err, ghsignal.ErrNoCodeScanning):
 		return outcomeNoData
 	}
 	// A real read failure: flag the org-wide credential / quota classes.
 	switch {
-	case errors.Is(err, model.ErrTokenInvalid):
+	case errors.Is(err, ghsignal.ErrTokenInvalid):
 		sc.tokenRejected = true
-	case errors.Is(err, model.ErrRateLimited):
+	case errors.Is(err, ghsignal.ErrRateLimited):
 		sc.rateLimited = true
 	}
 	return outcomeFailed

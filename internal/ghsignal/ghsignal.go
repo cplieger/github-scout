@@ -1,5 +1,8 @@
-// Package model holds the pure data types describing the GitHub signals
-// github-scout surfaces. Types here carry no behavior beyond JSON struct
+// Package ghsignal holds the pure data types describing the GitHub signals
+// github-scout surfaces — the README's "four actionable signals" (workflow
+// runs, pull requests, issues, code-scanning alerts) plus the Repo scope they
+// attach to. The name is the app's own vocabulary compounded with gh: the
+// bare word would shadow os/signal, which this binary also imports. Types here carry no behavior beyond JSON struct
 // tags. The structs are never JSON-marshaled on the emit path, though: each
 // signal reaches Loki as a slog.Info line whose field names are the literal
 // key strings passed in internal/collect, so those keys — not these tags —
@@ -7,7 +10,7 @@
 // Loki field; renaming a slog key in internal/collect does, and silently
 // breaks dashboard panels and any Loki ruler alert. The tags mirror the slog
 // keys for documentation and must be kept in sync with them;
-// TestLogKeysMatchModelTags (internal/collect) fails the build if they drift.
+// TestLogKeysMatchSignalTags (internal/collect) fails the build if they drift.
 //
 // Two emission models are used (see internal/collect):
 //
@@ -22,14 +25,14 @@
 //     full current set every scan. When an item is closed/merged/fixed it
 //     simply stops appearing in future snapshots, and the dashboard reads
 //     the most recent snapshot as "what is open right now".
-package model
+package ghsignal
 
 import (
 	"errors"
 	"slices"
 	"time"
 
-	"github.com/cplieger/runesafe"
+	"github.com/cplieger/runesafe/v2"
 )
 
 // ErrNoCodeScanning marks a repo that has no code-scanning analyses — GitHub

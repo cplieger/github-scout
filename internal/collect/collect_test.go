@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cplieger/github-scout/internal/model"
+	"github.com/cplieger/github-scout/internal/ghsignal"
 	"github.com/cplieger/slogx/capture"
 )
 
@@ -23,34 +23,34 @@ type fakeClient struct {
 	reposErr  error
 	prsErr    error
 	issuesErr error
-	runs      map[string][]model.WorkflowRun
+	runs      map[string][]ghsignal.WorkflowRun
 	runsErr   map[string]error
-	alerts    map[string][]model.CodeScanningAlert
+	alerts    map[string][]ghsignal.CodeScanningAlert
 	alertsErr map[string]error
-	prs       []model.PullRequest
-	issues    []model.Issue
-	repos     []model.Repo
+	prs       []ghsignal.PullRequest
+	issues    []ghsignal.Issue
+	repos     []ghsignal.Repo
 	runCalls  int
 }
 
-func (f *fakeClient) ListRepos(context.Context, string) ([]model.Repo, error) {
+func (f *fakeClient) ListRepos(context.Context, string) ([]ghsignal.Repo, error) {
 	return f.repos, f.reposErr
 }
 
-func (f *fakeClient) ListRuns(_ context.Context, repo model.Repo, _ time.Time) ([]model.WorkflowRun, error) {
+func (f *fakeClient) ListRuns(_ context.Context, repo ghsignal.Repo, _ time.Time) ([]ghsignal.WorkflowRun, error) {
 	f.runCalls++
 	return f.runs[repo.FullName()], f.runsErr[repo.FullName()]
 }
 
-func (f *fakeClient) SearchOpenPRs(context.Context, string, string) ([]model.PullRequest, error) {
+func (f *fakeClient) SearchOpenPRs(context.Context, string, string) ([]ghsignal.PullRequest, error) {
 	return f.prs, f.prsErr
 }
 
-func (f *fakeClient) SearchOpenIssues(context.Context, string, string) ([]model.Issue, error) {
+func (f *fakeClient) SearchOpenIssues(context.Context, string, string) ([]ghsignal.Issue, error) {
 	return f.issues, f.issuesErr
 }
 
-func (f *fakeClient) ListCodeScanningAlerts(_ context.Context, repo model.Repo) ([]model.CodeScanningAlert, error) {
+func (f *fakeClient) ListCodeScanningAlerts(_ context.Context, repo ghsignal.Repo) ([]ghsignal.CodeScanningAlert, error) {
 	return f.alerts[repo.FullName()], f.alertsErr[repo.FullName()]
 }
 
@@ -76,7 +76,7 @@ func TestScanDiscoveryFailureUnhealthy(t *testing.T) {
 }
 
 func TestScanHealthyWithNoSignals(t *testing.T) {
-	fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "clean"}}}
+	fc := &fakeClient{repos: []ghsignal.Repo{{Owner: "cplieger", Name: "clean"}}}
 	if !newCollector(t, fc, nil).Scan(t.Context()) {
 		t.Errorf("Scan should be healthy when discovery works, even with zero signals")
 	}
@@ -91,14 +91,14 @@ func TestScanHealthyWithNoSignals(t *testing.T) {
 // scanning is still read.
 func TestScanCodeScanningExcludeSkipsSignalNotRepo(t *testing.T) {
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "private"}, {Owner: "cplieger", Name: "public"}},
-		runs: map[string][]model.WorkflowRun{
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "private"}, {Owner: "cplieger", Name: "public"}},
+		runs: map[string][]ghsignal.WorkflowRun{
 			"cplieger/private": {{Repo: "cplieger/private", RunID: 1, Conclusion: "success", CreatedAt: fixedNow().Add(-time.Hour)}},
 		},
 		// If code scanning were attempted for the excluded repo it would 403;
 		// the exclude means we never call it, so this error must never surface.
 		alertsErr: map[string]error{"cplieger/private": errors.New("alerts 403")},
-		alerts:    map[string][]model.CodeScanningAlert{"cplieger/public": {{Repo: "cplieger/public", Number: 1}}},
+		alerts:    map[string][]ghsignal.CodeScanningAlert{"cplieger/public": {{Repo: "cplieger/public", Number: 1}}},
 	}
 	c := New(&Deps{
 		Client:              fc,
@@ -138,7 +138,7 @@ func TestScanPartialFailuresStillHealthy(t *testing.T) {
 	// degradation: every signal is blind, so degraded=true, errors=4, all four
 	// names in failed_signals, and exactly one ERROR-level "scan degraded".
 	fc := &fakeClient{
-		repos:     []model.Repo{{Owner: "cplieger", Name: "x"}},
+		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
 		prsErr:    errors.New("pr search 500"),
 		issuesErr: errors.New("issue search 500"),
 		runsErr:   map[string]error{"cplieger/x": errors.New("runs 500")},
@@ -172,11 +172,11 @@ func TestScanPartialFailuresStillHealthy(t *testing.T) {
 
 func TestScanEmitsAllFourSignals(t *testing.T) {
 	fc := &fakeClient{
-		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}},
-		prs:    []model.PullRequest{{Repo: "cplieger/x", Number: 1, Title: "feat"}},
-		issues: []model.Issue{{Repo: "cplieger/x", Number: 2, Title: "bug"}},
-		runs:   map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
-		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3, Rule: "go/sql-injection"}}},
+		repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		prs:    []ghsignal.PullRequest{{Repo: "cplieger/x", Number: 1, Title: "feat"}},
+		issues: []ghsignal.Issue{{Repo: "cplieger/x", Number: 2, Title: "bug"}},
+		runs:   map[string][]ghsignal.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+		alerts: map[string][]ghsignal.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3, Rule: "go/sql-injection"}}},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
@@ -207,11 +207,11 @@ func TestRunsDedupButSnapshotsRepeat(t *testing.T) {
 	// Workflow runs are event-once; PRs/issues/alerts are snapshots emitted
 	// every scan. Two scans => run once, but PR/issue/alert twice.
 	fc := &fakeClient{
-		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}},
-		prs:    []model.PullRequest{{Repo: "cplieger/x", Number: 1}},
-		issues: []model.Issue{{Repo: "cplieger/x", Number: 2}},
-		runs:   map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "success", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
-		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3}}},
+		repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		prs:    []ghsignal.PullRequest{{Repo: "cplieger/x", Number: 1}},
+		issues: []ghsignal.Issue{{Repo: "cplieger/x", Number: 2}},
+		runs:   map[string][]ghsignal.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "success", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+		alerts: map[string][]ghsignal.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3}}},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
@@ -234,8 +234,8 @@ func TestScanEmitsEveryRunAndCountsFailures(t *testing.T) {
 	// failures); the scan summary reports new_runs (all) and new_failures
 	// (only the failureConclusions set — success and cancelled are excluded).
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runs: map[string][]model.WorkflowRun{"cplieger/x": {
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		runs: map[string][]ghsignal.WorkflowRun{"cplieger/x": {
 			{Repo: "cplieger/x", RunID: 1, Conclusion: "success", CreatedAt: fixedNow().Add(-1 * time.Hour)},
 			{Repo: "cplieger/x", RunID: 2, Conclusion: "failure", CreatedAt: fixedNow().Add(-2 * time.Hour)},
 			{Repo: "cplieger/x", RunID: 3, Conclusion: "timed_out", CreatedAt: fixedNow().Add(-3 * time.Hour)},
@@ -262,10 +262,10 @@ func TestExcludeReposSkipsAllSignals(t *testing.T) {
 	// Excluded repo must be skipped for runs/alerts (per-repo loop) AND
 	// filtered from the cross-repo PR/issue snapshots.
 	fc := &fakeClient{
-		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}, {Owner: "cplieger", Name: "noisy"}},
-		prs:    []model.PullRequest{{Repo: "cplieger/noisy", Number: 1}, {Repo: "cplieger/x", Number: 2}},
-		issues: []model.Issue{{Repo: "cplieger/noisy", Number: 3}},
-		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 4}}},
+		repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "x"}, {Owner: "cplieger", Name: "noisy"}},
+		prs:    []ghsignal.PullRequest{{Repo: "cplieger/noisy", Number: 1}, {Repo: "cplieger/x", Number: 2}},
+		issues: []ghsignal.Issue{{Repo: "cplieger/noisy", Number: 3}},
+		alerts: map[string][]ghsignal.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 4}}},
 	}
 	c := newCollector(t, fc, map[string]bool{"noisy": true})
 	rec := newRecordingHandler()
@@ -293,11 +293,11 @@ func TestExcludeReposSkipsAllSignals(t *testing.T) {
 }
 
 func TestPruneDropsRunsOlderThanLookback(t *testing.T) {
-	old := model.WorkflowRun{Repo: "cplieger/x", RunID: 1, CreatedAt: fixedNow().Add(-100 * time.Hour)}
-	fresh := model.WorkflowRun{Repo: "cplieger/x", RunID: 2, CreatedAt: fixedNow().Add(-1 * time.Hour)}
+	old := ghsignal.WorkflowRun{Repo: "cplieger/x", RunID: 1, CreatedAt: fixedNow().Add(-100 * time.Hour)}
+	fresh := ghsignal.WorkflowRun{Repo: "cplieger/x", RunID: 2, CreatedAt: fixedNow().Add(-1 * time.Hour)}
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runs:  map[string][]model.WorkflowRun{"cplieger/x": {old, fresh}},
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		runs:  map[string][]ghsignal.WorkflowRun{"cplieger/x": {old, fresh}},
 	}
 	c := newCollector(t, fc, nil)
 	c.Scan(t.Context())
@@ -315,12 +315,12 @@ func TestPruneDropsRunsOlderThanLookback(t *testing.T) {
 // NOT re-emit it. This is the property that makes trigger-mode dedup work.
 func TestStatePersistsDedupAcrossProcesses(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "seen-runs.json")
-	runs := map[string][]model.WorkflowRun{"cplieger/x": {
+	runs := map[string][]ghsignal.WorkflowRun{"cplieger/x": {
 		{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)},
 	}}
 	mk := func() (*Collector, *recordingHandler) {
 		rec := newRecordingHandler()
-		fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "x"}}, runs: runs}
+		fc := &fakeClient{repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}}, runs: runs}
 		c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
 		return c, rec
 	}
@@ -355,8 +355,8 @@ func TestStateCorruptStartsCold(t *testing.T) {
 	}
 	rec := newRecordingHandler()
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		runs:  map[string][]ghsignal.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
 	c.Scan(t.Context()) // must not panic
@@ -371,7 +371,7 @@ func TestStateCorruptStartsCold(t *testing.T) {
 func TestNewDefaultsNowToWallClock(t *testing.T) {
 	// New with no Now must fall back to time.Now, not leave the clock nil:
 	// a scan reads c.now() up front and would panic on a nil func.
-	fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "x"}}}
+	fc := &fakeClient{repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}}}
 	c := New(&Deps{
 		Client:   fc,
 		Logger:   slog.New(slog.NewTextHandler(testWriter{t}, nil)),
@@ -440,7 +440,7 @@ func (w testWriter) Write(p []byte) (int, error) {
 // alert-pinned messages like "scan degraded" require), and the attr-level
 // assertions (AttrValue/HasAttr, rendered-string comparisons) all come from
 // the embedded Recorder; only attrKeys (a key-SET enumeration against the
-// model JSON tags, which has no library equivalent) stays a local walk.
+// ghsignal JSON tags, which has no library equivalent) stays a local walk.
 type recordingHandler struct{ *capture.Recorder }
 
 func newRecordingHandler() *recordingHandler {
@@ -459,7 +459,7 @@ func (h *recordingHandler) firstRecord(msg string) (slog.Record, bool) {
 
 // attrKeys returns the set of attribute keys on the first record whose
 // message is msg, or nil if no such record exists. Used to assert a signal's
-// emitted slog field names against the matching model type's JSON tag set.
+// emitted slog field names against the matching ghsignal type's JSON tag set.
 func (h *recordingHandler) attrKeys(msg string) map[string]bool {
 	r, ok := h.firstRecord(msg)
 	if !ok {
@@ -481,11 +481,11 @@ func (h *recordingHandler) attrKeys(msg string) map[string]bool {
 // boundary mutant that the existing -100h/-1h cases both survive.
 func TestPruneBoundaryRetainsRunsAtCutoff(t *testing.T) {
 	cutoff := fixedNow().Add(-72 * time.Hour)
-	atCutoff := model.WorkflowRun{Repo: "cplieger/x", RunID: 1, CreatedAt: cutoff}
-	justBefore := model.WorkflowRun{Repo: "cplieger/x", RunID: 2, CreatedAt: cutoff.Add(-time.Nanosecond)}
+	atCutoff := ghsignal.WorkflowRun{Repo: "cplieger/x", RunID: 1, CreatedAt: cutoff}
+	justBefore := ghsignal.WorkflowRun{Repo: "cplieger/x", RunID: 2, CreatedAt: cutoff.Add(-time.Nanosecond)}
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runs:  map[string][]model.WorkflowRun{"cplieger/x": {atCutoff, justBefore}},
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		runs:  map[string][]ghsignal.WorkflowRun{"cplieger/x": {atCutoff, justBefore}},
 	}
 	c := newCollector(t, fc, nil)
 	c.Scan(t.Context())
@@ -522,8 +522,8 @@ func TestStateOversizedStartsCold(t *testing.T) {
 	}
 	rec := newRecordingHandler()
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		runs:  map[string][]ghsignal.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
 	c.Scan(t.Context()) // must not OOM or panic
@@ -550,8 +550,8 @@ func TestStateNullJSONDoesNotNilMap(t *testing.T) {
 	}
 	rec := newRecordingHandler()
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runs:  map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		runs:  map[string][]ghsignal.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 	}
 	c := New(&Deps{Client: fc, Logger: slog.New(rec), Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath})
 	c.Scan(t.Context()) // must not panic on a nil-map insert
@@ -570,11 +570,11 @@ func TestStateNullJSONDoesNotNilMap(t *testing.T) {
 // saveState marshal+write success branch (otherwise uncovered).
 func TestSavePersistsOnlyPrunedSet(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "seen-runs.json")
-	runs := map[string][]model.WorkflowRun{"cplieger/x": {
+	runs := map[string][]ghsignal.WorkflowRun{"cplieger/x": {
 		{Repo: "cplieger/x", RunID: 200, Conclusion: "failure", CreatedAt: fixedNow().Add(-200 * time.Hour)},
 		{Repo: "cplieger/x", RunID: 1, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)},
 	}}
-	fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "x"}}, runs: runs}
+	fc := &fakeClient{repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}}, runs: runs}
 	c1 := New(&Deps{
 		Client: fc, Logger: slog.New(slog.NewTextHandler(testWriter{t}, nil)),
 		Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath,
@@ -583,7 +583,7 @@ func TestSavePersistsOnlyPrunedSet(t *testing.T) {
 
 	// A fresh "process" reloads the persisted set; only the post-prune set
 	// was saved, so the beyond-lookback run must not reappear.
-	fc2 := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "x"}}}
+	fc2 := &fakeClient{repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}}}
 	c2 := New(&Deps{
 		Client: fc2, Logger: slog.New(slog.NewTextHandler(testWriter{t}, nil)),
 		Now: fixedNow, Owner: "cplieger", Lookback: 72 * time.Hour, StatePath: statePath,
@@ -608,8 +608,8 @@ func TestSaveStateMergesConcurrentWriters(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "seen-runs.json")
 	mk := func(runID int64) *Collector {
 		fc := &fakeClient{
-			repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-			runs: map[string][]model.WorkflowRun{"cplieger/x": {
+			repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+			runs: map[string][]ghsignal.WorkflowRun{"cplieger/x": {
 				{Repo: "cplieger/x", RunID: runID, Conclusion: "success", CreatedAt: fixedNow().Add(-1 * time.Hour)},
 			}},
 		}
@@ -633,21 +633,21 @@ func TestSaveStateMergesConcurrentWriters(t *testing.T) {
 	}
 }
 
-// TestLogKeysMatchModelTags pins the REAL Loki field-name contract. The four
+// TestLogKeysMatchSignalTags pins the REAL Loki field-name contract. The four
 // signals reach Loki as slog.Info lines whose field names are the literal keys
-// emitted in this package — the model structs are never JSON-marshaled on the
-// emit path — so the model JSON tags only document those keys, and the two are
+// emitted in this package — the ghsignal structs are never JSON-marshaled on the
+// emit path — so the ghsignal JSON tags only document those keys, and the two are
 // kept in sync by hand. This test runs one Scan with all four signals present
 // and asserts each msg's recorded slog attribute key set equals the matching
-// model type's JSON tag set; a rename on either side (a model tag or a
+// ghsignal type's JSON tag set; a rename on either side (a ghsignal tag or a
 // collect.go slog key) fails the build.
-func TestLogKeysMatchModelTags(t *testing.T) {
+func TestLogKeysMatchSignalTags(t *testing.T) {
 	fc := &fakeClient{
-		repos:  []model.Repo{{Owner: "cplieger", Name: "x"}},
-		prs:    []model.PullRequest{{Repo: "cplieger/x", Number: 1, Title: "feat"}},
-		issues: []model.Issue{{Repo: "cplieger/x", Number: 2, Title: "bug"}},
-		runs:   map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
-		alerts: map[string][]model.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3, Rule: "go/sql-injection"}}},
+		repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		prs:    []ghsignal.PullRequest{{Repo: "cplieger/x", Number: 1, Title: "feat"}},
+		issues: []ghsignal.Issue{{Repo: "cplieger/x", Number: 2, Title: "bug"}},
+		runs:   map[string][]ghsignal.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+		alerts: map[string][]ghsignal.CodeScanningAlert{"cplieger/x": {{Repo: "cplieger/x", Number: 3, Rule: "go/sql-injection"}}},
 	}
 	c := newCollector(t, fc, nil)
 	rec := newRecordingHandler()
@@ -658,10 +658,10 @@ func TestLogKeysMatchModelTags(t *testing.T) {
 		signal any
 		msg    string
 	}{
-		{model.WorkflowRun{}, "workflow run"},
-		{model.PullRequest{}, "open pull request"},
-		{model.Issue{}, "open issue"},
-		{model.CodeScanningAlert{}, "code scanning alert"},
+		{ghsignal.WorkflowRun{}, "workflow run"},
+		{ghsignal.PullRequest{}, "open pull request"},
+		{ghsignal.Issue{}, "open issue"},
+		{ghsignal.CodeScanningAlert{}, "code scanning alert"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.msg, func(t *testing.T) {
@@ -708,13 +708,13 @@ func sortedKeys(m map[string]bool) []string {
 // survive; someoneelse/y and cplieger-evil/z are filtered.
 func TestSnapshotsFilterForeignOwnerRepos(t *testing.T) {
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-		prs: []model.PullRequest{
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		prs: []ghsignal.PullRequest{
 			{Repo: "cplieger/x", Number: 1},
 			{Repo: "someoneelse/y", Number: 2},
 			{Repo: "cplieger-evil/z", Number: 3},
 		},
-		issues: []model.Issue{
+		issues: []ghsignal.Issue{
 			{Repo: "cplieger/x", Number: 4},
 			{Repo: "someoneelse/y", Number: 5},
 			{Repo: "cplieger-evil/z", Number: 6},
@@ -748,8 +748,8 @@ func TestSaveStateWriteFailureToleratedAndWarns(t *testing.T) {
 	statePath := filepath.Join(notADir, "seen-runs.json")
 	rec := newRecordingHandler()
 	fc := &fakeClient{
-		repos: []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runs: map[string][]model.WorkflowRun{"cplieger/x": {
+		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		runs: map[string][]ghsignal.WorkflowRun{"cplieger/x": {
 			{
 				Repo: "cplieger/x", RunID: 9, Conclusion: "failure",
 				CreatedAt: fixedNow().Add(-1 * time.Hour),
@@ -775,7 +775,7 @@ func TestSaveStateWriteFailureToleratedAndWarns(t *testing.T) {
 // TestScanContextCancelNotDegraded injects context.Canceled as fake-returned
 // errors but never passes a cancelled context to Scan, leaving the break uncovered.
 func TestScanStopsScanningOnContextCancel(t *testing.T) {
-	fc := &fakeClient{repos: []model.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}}}
+	fc := &fakeClient{repos: []ghsignal.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}}}
 	c := newCollector(t, fc, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -813,8 +813,8 @@ func TestKeepIsCaseInsensitiveOnOwner(t *testing.T) {
 // folding the error into the integrity verdict.
 func TestCollectRunsEmitsPartialRunsOnError(t *testing.T) {
 	fc := &fakeClient{
-		repos:   []model.Repo{{Owner: "cplieger", Name: "x"}},
-		runs:    map[string][]model.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
+		repos:   []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
+		runs:    map[string][]ghsignal.WorkflowRun{"cplieger/x": {{Repo: "cplieger/x", RunID: 9, Conclusion: "failure", CreatedAt: fixedNow().Add(-1 * time.Hour)}}},
 		runsErr: map[string]error{"cplieger/x": errors.New("list runs page 2: server error 500")},
 	}
 	c := newCollector(t, fc, nil)

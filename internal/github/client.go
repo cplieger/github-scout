@@ -25,10 +25,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cplieger/github-scout/internal/model"
+	"github.com/cplieger/github-scout/internal/ghsignal"
 	"github.com/cplieger/github-scout/internal/urlsafe"
-	"github.com/cplieger/httpx/v4"
-	"github.com/cplieger/runesafe"
+	"github.com/cplieger/httpx/v5"
+	"github.com/cplieger/runesafe/v2"
 )
 
 const (
@@ -63,20 +63,38 @@ type Client struct {
 	retryOpts []httpx.Option
 }
 
-// NewClient returns a Client using the provided *http.Client for all
-// requests, authenticating with token, and applying retryOpts to each
-// call. A nil logger falls back to slog.Default. condCachePath, when
-// non-empty, persists the conditional-request cache (per-URL validators +
-// the item subset they validate) across processes; empty keeps it
-// in-memory only (tests).
-func NewClient(client *http.Client, token string, retryOpts []httpx.Option, logger *slog.Logger, condCachePath string) *Client {
+// Options configures NewClient. HTTP and Token are required; the other
+// three fields have meaningful zero values, which is why this is a struct
+// rather than a parameter list — three optional trailing parameters made
+// every call site restate defaults positionally, and the two same-typed
+// strings (the required token, the optional cache path) left a token/path
+// transposition compiling.
+// Field order is govet fieldalignment's, not editorial.
+type Options struct {
+	// HTTP performs every request. Required.
+	HTTP *http.Client
+	// Logger receives the client's warnings; nil falls back to slog.Default.
+	Logger *slog.Logger
+	// Token authenticates every call.
+	Token string
+	// CondCachePath, when non-empty, persists the conditional-request cache
+	// (per-URL validators + the item subset they validate) across processes;
+	// empty keeps it in-memory only (tests).
+	CondCachePath string
+	// RetryOpts apply to each request; nil means the httpx defaults.
+	RetryOpts []httpx.Option
+}
+
+// NewClient returns a Client for the GitHub REST API, configured by opts.
+func NewClient(opts Options) *Client {
+	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &Client{
-		http: client, token: token, baseURL: apiBase,
-		retryOpts: retryOpts, logger: logger,
-		cache: newCondCache(condCachePath, logger),
+		http: opts.HTTP, token: opts.Token, baseURL: apiBase,
+		retryOpts: opts.RetryOpts, logger: logger,
+		cache: newCondCache(opts.CondCachePath, logger),
 	}
 }
 
@@ -96,11 +114,11 @@ type apiRepo struct {
 // runs in a private repo are just as actionable as public ones, and the
 // public endpoint omits them. Results are filtered to owner so a token
 // with org memberships doesn't pull in repos the operator didn't ask for.
-func (c *Client) ListRepos(ctx context.Context, owner string) ([]model.Repo, error) {
+func (c *Client) ListRepos(ctx context.Context, owner string) ([]ghsignal.Repo, error) {
 	if !urlsafe.IsSafeURLSegment(owner) {
 		return nil, fmt.Errorf("unsafe owner segment: %q", owner)
 	}
-	var repos []model.Repo
+	var repos []ghsignal.Repo
 	for page := 1; page <= maxPages; page++ {
 		q := url.Values{}
 		q.Set("affiliation", "owner")
@@ -117,7 +135,7 @@ func (c *Client) ListRepos(ctx context.Context, owner string) ([]model.Repo, err
 			if !strings.EqualFold(r.Owner.Login, owner) || r.Archived {
 				continue
 			}
-			repos = append(repos, model.Repo{
+			repos = append(repos, ghsignal.Repo{
 				Owner:    r.Owner.Login,
 				Name:     r.Name,
 				Private:  r.Private,
@@ -160,17 +178,17 @@ type apiRun struct {
 // since, in a single paginated query. status=completed catches every
 // conclusion (success, failure, timed_out, cancelled, …) in one request,
 // so the former per-conclusion fan-out is gone: the collector emits each
-// run once and classifies failures via model.IsFailureConclusion, and the
+// run once and classifies failures via ghsignal.IsFailureConclusion, and the
 // dashboard derives both the failures view and the failure rate from the
 // one all-runs stream. The Actions API returns runs newest-first, so a repo
 // that exceeds maxPages*perPage completed runs inside the lookback window
 // has its oldest runs truncated — acceptable, since that volume is itself a
 // signal worth investigating directly.
-func (c *Client) ListRuns(ctx context.Context, repo model.Repo, since time.Time) ([]model.WorkflowRun, error) {
+func (c *Client) ListRuns(ctx context.Context, repo ghsignal.Repo, since time.Time) ([]ghsignal.WorkflowRun, error) {
 	if !urlsafe.IsSafeURLSegment(repo.Owner) || !urlsafe.IsSafeURLSegment(repo.Name) {
 		return nil, fmt.Errorf("unsafe repo segment: %q", repo.FullName())
 	}
-	var runs []model.WorkflowRun
+	var runs []ghsignal.WorkflowRun
 	for page := 1; page <= maxPages; page++ {
 		q := url.Values{}
 		q.Set("status", "completed")
@@ -186,7 +204,7 @@ func (c *Client) ListRuns(ctx context.Context, repo model.Repo, since time.Time)
 			return runs, fmt.Errorf("list runs page %d: %w", page, err)
 		}
 		for _, r := range pageData.WorkflowRuns {
-			runs = append(runs, model.WorkflowRun{
+			runs = append(runs, ghsignal.WorkflowRun{
 				Repo:       repo.FullName(),
 				Workflow:   r.Name,
 				RunID:      r.ID,
@@ -321,7 +339,7 @@ func (e transientStatusError) Unwrap() error { return e.error }
 // paths can return into the domain sentinels the collector escalates on, so
 // internal/collect classifies on meaning and never imports httpx. A 401
 // (rejected token) and a 429 (rate limit) are org-wide — they poison every
-// call this scan — so they become model.ErrTokenInvalid / model.ErrRateLimited
+// call this scan — so they become ghsignal.ErrTokenInvalid / ghsignal.ErrRateLimited
 // (the original status error is preserved in the chain for logging). Every
 // other failure passes through unchanged: a 403 (per-repo: Advanced Security
 // off or a missing scope), a 5xx, or a decode error is a plain per-signal
@@ -343,17 +361,17 @@ func mapStatusError(err error) error {
 	if se, ok := errors.AsType[*httpx.StatusError](err); ok {
 		switch se.Code {
 		case http.StatusUnauthorized:
-			return fmt.Errorf("%w: %w", model.ErrTokenInvalid, err)
+			return fmt.Errorf("%w: %w", ghsignal.ErrTokenInvalid, err)
 		case http.StatusTooManyRequests:
-			return fmt.Errorf("%w: %w", model.ErrRateLimited, err)
+			return fmt.Errorf("%w: %w", ghsignal.ErrRateLimited, err)
 		}
 		return err
 	}
 	if _, ok := errors.AsType[*httpx.RateLimitError](err); ok {
-		return fmt.Errorf("%w: %w", model.ErrRateLimited, err)
+		return fmt.Errorf("%w: %w", ghsignal.ErrRateLimited, err)
 	}
 	if ae, ok := errors.AsType[*httpx.AuthError](err); ok && strings.Contains(ae.Msg, "(401)") {
-		return fmt.Errorf("%w: %w", model.ErrTokenInvalid, err)
+		return fmt.Errorf("%w: %w", ghsignal.ErrTokenInvalid, err)
 	}
 	return err
 }
@@ -388,15 +406,15 @@ type apiSearchItem struct {
 // SearchOpenPRs returns every open pull request across the owner's repos in
 // a single cross-repo query. exclude is appended raw to the search query
 // (e.g. "-author:app/renovate") so the caller controls noise filtering.
-func (c *Client) SearchOpenPRs(ctx context.Context, owner, exclude string) ([]model.PullRequest, error) {
+func (c *Client) SearchOpenPRs(ctx context.Context, owner, exclude string) ([]ghsignal.PullRequest, error) {
 	items, err := c.search(ctx, "is:open is:pr", owner, exclude)
 	if err != nil {
 		return nil, err
 	}
-	prs := make([]model.PullRequest, 0, len(items))
+	prs := make([]ghsignal.PullRequest, 0, len(items))
 	for i := range items {
 		it := &items[i]
-		prs = append(prs, model.PullRequest{
+		prs = append(prs, ghsignal.PullRequest{
 			CreatedAt: it.CreatedAt,
 			Repo:      repoFromAPIURL(it.RepositoryURL),
 			Title:     it.Title,
@@ -412,19 +430,19 @@ func (c *Client) SearchOpenPRs(ctx context.Context, owner, exclude string) ([]mo
 // SearchOpenIssues returns every open issue across the owner's repos in a
 // single cross-repo query. exclude filters bot/auto-generated noise (e.g.
 // "-author:app/renovate -label:renovate -label:auto-generated").
-func (c *Client) SearchOpenIssues(ctx context.Context, owner, exclude string) ([]model.Issue, error) {
+func (c *Client) SearchOpenIssues(ctx context.Context, owner, exclude string) ([]ghsignal.Issue, error) {
 	items, err := c.search(ctx, "is:open is:issue", owner, exclude)
 	if err != nil {
 		return nil, err
 	}
-	issues := make([]model.Issue, 0, len(items))
+	issues := make([]ghsignal.Issue, 0, len(items))
 	for i := range items {
 		it := &items[i]
 		labels := make([]string, 0, len(it.Labels))
 		for _, l := range it.Labels {
 			labels = append(labels, l.Name)
 		}
-		issues = append(issues, model.Issue{
+		issues = append(issues, ghsignal.Issue{
 			CreatedAt: it.CreatedAt,
 			Repo:      repoFromAPIURL(it.RepositoryURL),
 			Title:     it.Title,
@@ -448,7 +466,7 @@ func (c *Client) search(ctx context.Context, base, owner, exclude string) ([]api
 	// archived:false excludes archived repos from the cross-repo Search API,
 	// which (unlike ListRepos) includes them by default. This aligns the
 	// snapshot path with the repo-loop path (ListRepos filters r.Archived) and
-	// with model.Repo's contract that archived repos are skipped: an archived
+	// with ghsignal.Repo's contract that archived repos are skipped: an archived
 	// repo's open PRs/issues are not actionable.
 	q := base + " user:" + owner + " archived:false"
 	if exclude = strings.TrimSpace(exclude); exclude != "" {
@@ -503,7 +521,7 @@ type apiCodeAlert struct {
 // ListCodeScanningAlerts returns open code-scanning alerts for repo. A repo
 // that never ran code scanning returns 404 (no analyses); that is a benign
 // "no data" outcome rather than a read failure, so it is surfaced as
-// model.ErrNoCodeScanning (the collector treats such a repo as neither
+// ghsignal.ErrNoCodeScanning (the collector treats such a repo as neither
 // readable nor blind). A 403 is surfaced as a generic error: it can mean
 // GitHub Advanced Security is disabled (expected on a private repo without a
 // GHAS license) OR a missing token scope OR a rate-limit, and silently
@@ -513,11 +531,11 @@ type apiCodeAlert struct {
 // private repo without GHAS) via CODE_SCANNING_EXCLUDE_REPOS, which skips
 // only that repo's code-scanning read (EXCLUDE_REPOS would drop the repo
 // from every signal).
-func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([]model.CodeScanningAlert, error) {
+func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo ghsignal.Repo) ([]ghsignal.CodeScanningAlert, error) {
 	if !urlsafe.IsSafeURLSegment(repo.Owner) || !urlsafe.IsSafeURLSegment(repo.Name) {
 		return nil, fmt.Errorf("unsafe repo segment: %q", repo.FullName())
 	}
-	var alerts []model.CodeScanningAlert
+	var alerts []ghsignal.CodeScanningAlert
 	for page := 1; page <= maxPages; page++ {
 		v := url.Values{}
 		v.Set("state", "open")
@@ -529,18 +547,18 @@ func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo model.Repo) ([
 		if err := c.getJSONConditional(ctx, reqURL, &pageAlerts); err != nil {
 			if codeScanningNotFound(err) && len(alerts) == 0 {
 				// No analyses for this repo (404): not a read failure but a
-				// benign "no data" outcome. Surface model.ErrNoCodeScanning so
+				// benign "no data" outcome. Surface ghsignal.ErrNoCodeScanning so
 				// the collector excludes this repo from the code-scanning
 				// "blind" calculation instead of counting it as a clean read.
 				// A 404 after earlier pages already returned alerts is a real
 				// read failure, not no-data — surface it via the wrapped error.
-				return nil, model.ErrNoCodeScanning
+				return nil, ghsignal.ErrNoCodeScanning
 			}
 			return nil, fmt.Errorf("list code scanning alerts page %d: %w", page, err)
 		}
 		for i := range pageAlerts {
 			a := &pageAlerts[i]
-			alerts = append(alerts, model.CodeScanningAlert{
+			alerts = append(alerts, ghsignal.CodeScanningAlert{
 				CreatedAt: a.CreatedAt,
 				Repo:      repo.FullName(),
 				Rule:      cmp.Or(a.Rule.ID, a.Rule.Description),
