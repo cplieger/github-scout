@@ -1,6 +1,6 @@
 module github.com/cplieger/github-scout
 
-go 1.26.6
+go 1.26.7
 
 require github.com/cplieger/health v1.5.1
 
