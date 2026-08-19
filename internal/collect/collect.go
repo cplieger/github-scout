@@ -353,11 +353,12 @@ func (c *Collector) keep(repoFullName string) bool {
 
 // excludedRepo reports whether a "owner/name" full name is in the exclude
 // set (which is keyed by bare repo name). The lookup is case-insensitive,
-// mirroring keep()'s owner test and the lowercased exclude set.
+// mirroring keep()'s owner test and the lowercased exclude set. A name with
+// no owner prefix is looked up whole.
 func (c *Collector) excludedRepo(fullName string) bool {
 	name := fullName
-	if i := strings.LastIndexByte(fullName, '/'); i != -1 {
-		name = fullName[i+1:]
+	if _, bare, found := strings.CutLast(fullName, "/"); found {
+		name = bare
 	}
 	return c.excludedName(name)
 }
