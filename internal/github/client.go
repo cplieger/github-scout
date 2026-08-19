@@ -599,9 +599,8 @@ func codeScanningNotFound(err error) bool {
 // form https://api.github.com/repos/<owner>/<name>. Returns the raw input
 // if it doesn't match (defensive; the Search API always populates it).
 func repoFromAPIURL(repoURL string) string {
-	const marker = "/repos/"
-	if i := strings.LastIndex(repoURL, marker); i != -1 {
-		return repoURL[i+len(marker):]
+	if _, fullName, found := strings.CutLast(repoURL, "/repos/"); found {
+		return fullName
 	}
 	return repoURL
 }
