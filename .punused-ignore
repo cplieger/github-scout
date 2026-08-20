@@ -1,6 +1,6 @@
 # punused findings adjudicated as false positives. One literal substring per
 # line, matched against punused's output line; full-line `#` comments carry the
-# reason. See `.kiro/steering/tools.md` for the invalid-by-construction classes.
+# reason.
 #
 # transientStatusError wraps a non-transient 5xx so the conditional-GET door
 # keeps GetBytes retry parity. Both methods are reached only through an
