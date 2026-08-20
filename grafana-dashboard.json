@@ -1325,7 +1325,7 @@
     {
       "id": 40,
       "title": "Scout Status",
-      "description": "Whether github-scout completed a scan in the last hour (it runs every 15m). STALLED means the scanner is wedged or the container is down; investigate it, because every panel above then goes stale and silently reads empty. A scan that completes but could not read every signal shows on the Scan Integrity tile beside this one; github-scout's own errors also surface on the Live Operations error-rate panel.",
+      "description": "Whether github-scout completed a scan in the last hour (it runs every 15m). STALLED means the scanner is wedged or the container is down; investigate it, because every panel above then goes stale and silently reads empty. A scan that completes but could not read every signal shows on the Scan Integrity tile beside this one.",
       "type": "stat",
       "gridPos": {
         "h": 4,
