@@ -3,7 +3,7 @@
 Notes on the architecture, local workflow, and conventions specific to this
 repo. The org-wide `cplieger` defaults still apply; this file adds the
 code-grounded detail you need to land a change without tripping over the
-load-bearing patterns.
+patterns the design depends on.
 
 > This is a small, single-purpose self-hosted tool (see the disclaimer in the
 > README). Contributions are welcome, but the maintainer optimises for a small,
@@ -82,7 +82,7 @@ A scan that runs but goes blind escalates to a distinct `error`-level
 - `no_repos_visible`: discovery succeeded but returned zero repositories (a token
   that lost repo visibility, so nothing was scanned).
 - `code_scanning_blind` / `runs_blind`: a per-repo signal could not be read for
-  any repo that has it (e.g. a missing token scope). A repo that simply lacks
+  any repo that has it (for example, a missing token scope). A repo that lacks
   code scanning, or one listed in `CODE_SCANNING_EXCLUDE_REPOS`, is excluded, so
   it never masks a real blackout.
 - `signal_blind`: a cross-repo search (PRs or issues) failed.
@@ -205,11 +205,11 @@ Branch from `main`, keep changes focused with tests, and open a PR. Commit
 messages follow [Conventional Commits](https://www.conventionalcommits.org/);
 git-cliff parses them to build release notes and pick the version bump
 (`feat:` → minor, `fix:` / `sec:` → patch/security, `feat!:` → major; `chore`,
-`ci`, `docs`, `test`, etc. don't release). Write the subject as the changelog
+`ci`, `docs`, and `test` do not release). Write the subject as the changelog
 line a user would read. CI must be green: the required `ci / validate` check
 builds the binary and Dockerfile and runs vet/lint/race-tests/govulncheck.
 Releases are automated from the commit history on merge to `main`; contributors
-don't tag or publish manually.
+do not tag or publish manually.
 
 ## Conduct and security
 

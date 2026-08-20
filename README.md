@@ -74,7 +74,7 @@ dashboard:
   dashboard also dedups by run ID, so counts stay correct either way.
 - **Snapshot** (open PRs, open issues, code-scanning alerts). These are
   current _state_: the full set is re-emitted **every scan**, a closed item
-  simply stops appearing, and the dashboard reads the most recent scan as
+  stops appearing, and the dashboard reads the most recent scan as
   "what is open right now".
 
 github-scout keeps **no database**; history lives in Loki. Its only local
@@ -142,22 +142,22 @@ never logged (only its presence is logged at startup).
 | `ISSUE_EXCLUDE_QUERY` | Raw GitHub search qualifiers appended to the open-issue search | `-author:app/renovate -label:renovate -label:auto-generated` | No |
 | `LOG_LEVEL` | `debug`, `info`, `warn`, `error` | `info` | No |
 
-Out-of-range or unparseable values fall back to the default (a bad
-`SCAN_INTERVAL` keeps scanning at 15m; an out-of-range `LOOKBACK_HOURS` is
-clamped), so misconfiguration degrades safely rather than crashing. No value
-disables scanning (`off` / `disabled` / `0` fall back to the default too);
-for on-demand scans, use the `trigger` subcommand.
+An unparseable value falls back to the default (a bad `SCAN_INTERVAL` keeps
+scanning at 15m); an out-of-range value is clamped (`SCAN_INTERVAL` to between
+1m and 365d, `LOOKBACK_HOURS` to between 1 and 720 hours), so misconfiguration
+degrades safely rather than crashing. No value disables scanning (`off` /
+`disabled` / `0` fall back to the default too); for on-demand scans, use the
+`trigger` subcommand.
 
 ### Run modes
 
 - **Scheduled** (`SCAN_INTERVAL=15m`, the default): an internal jittered timer
-  drives the scans in the resident process. Failed runs are deduplicated in
-  memory and emitted once.
+  drives the scans in the resident process.
 - **Trigger** (`github-scout trigger`): one scan, then exit 0/1: the dev
   loop (`go run . trigger`), cron on a bare host, CI. Its output goes to the
   invoking context's stdout, exactly where a one-shot's output belongs.
 
-There is no externally-scheduled container mode. github-scout's stdout **is**
+github-scout has no externally-scheduled container mode. Its stdout **is**
 the product: the dashboard, the alert rules, and every query in this README
 consume the container's main-process log stream. A scan executed inside the
 container by an external scheduler (`docker exec … trigger`) writes to the
@@ -206,7 +206,7 @@ dashboard treats `failure` / `timed_out` / `startup_failure` as the failure set
 data-integrity fields: `errors` (how many signal collections failed this scan),
 `degraded` (`true` when `errors > 0`, or when discovery returned zero repos so
 nothing was scanned), and `failed_signals` (the comma-joined signals it could
-not read, e.g. `code_scanning`). These distinguish a verified `0` ("checked,
+not read, for example `code_scanning`). These distinguish a verified `0` ("checked,
 nothing there") from an unverified `0` ("could not check"), which matters most
 for the code-scanning security signal.
 
@@ -238,10 +238,10 @@ questions:
 3. **Recent CI failures**: a linked table of failed, timed-out, and
    startup-failed runs in the selected time range (successful runs are omitted).
 4. **Scout health**: a STALLED tile (red when no scan completed recently)
-   alongside a **Scan Integrity** tile that is neutral while recent scans read
-   every signal and turns red when one was degraded (a signal it could not
-   read, so a `0` above may be unverified rather than confirmed empty), plus a
-   **Recent scan problems** panel listing every warning and error behind it.
+   alongside a **Scan Integrity** tile that stays green while recent scans read
+   every signal and turns red when a scan logged an error (a signal or a repo
+   listing it could not read, so a `0` above is unverified rather than confirmed
+   empty).
 
 Two controls shape what you see:
 
@@ -339,8 +339,8 @@ is its exit code and its own stdout.
 
 - **Distroless, rootless, no shell.** Runs as `nonroot` on
   `gcr.io/distroless/static` with no package manager or shell to exploit.
-- **No listening port.** There is no HTTP server; nothing to reach from the
-  network. Output is stdout; health is a file marker.
+- **No listening port.** github-scout runs no HTTP server; nothing to reach from
+  the network. Output is stdout; health is a file marker.
 - **Minimal writable state.** The only filesystem writes are the `/tmp/.healthy`
   marker and two small state files (`/tmp/seen-runs.json` run dedup,
   `/tmp/cond-cache.json` HTTP revalidation cache); no database, no persistent
