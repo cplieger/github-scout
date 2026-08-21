@@ -128,6 +128,27 @@ scanning; list it in `CODE_SCANNING_EXCLUDE_REPOS` to skip just that signal.
 The token is only ever sent to `api.github.com` as a Bearer header and is
 never logged (only its presence is logged at startup).
 
+### Forks are skipped for code scanning by default
+
+GitHub reports the alerts of the code a fork **inherited** as the fork's own,
+so a fork of a large project surfaces hundreds of findings in code you did not
+write. One fork of a big upstream project measured 500 open alerts against 6
+across every first-party repo, which drowns the signal the panel exists to
+raise. `CODE_SCANNING_EXCLUDE_FORKS` therefore defaults to `true` and skips
+that one signal on every fork, as a batch, so a new fork is covered the moment
+you create it rather than when you remember to add its name.
+
+The skip is the same one `CODE_SCANNING_EXCLUDE_REPOS` applies: a fork keeps its
+runs, PR and issue signals, because those are your own work, and a skipped repo
+counts as neither a readable signal nor a failure, so it can neither mark a scan
+degraded nor mask a real code-scanning blackout. Set
+`CODE_SCANNING_EXCLUDE_FORKS=false` if your forks carry enough of your own code
+to be worth scanning; the two mechanisms are independent, so you can leave the
+flag off and still name individual forks in `CODE_SCANNING_EXCLUDE_REPOS`.
+
+Archived repos need no entry in either list: they are dropped at discovery, so
+they reach no signal at all.
+
 ## Configuration reference
 
 | Variable | Description | Default | Required |
@@ -137,6 +158,7 @@ never logged (only its presence is logged at startup).
 | `SCAN_INTERVAL` | Gap between scans, a Go duration (`15m`, `1h`). No disable value | `15m` | No |
 | `LOOKBACK_HOURS` | How far back each scan considers completed runs (also bounds the dedup set) | `72` | No |
 | `EXCLUDE_REPOS` | Comma-separated **bare** repo names to skip (silences all signals) | _(unset)_ | No |
+| `CODE_SCANNING_EXCLUDE_FORKS` | Skip the code-scanning signal on every fork (a fork's alerts are the upstream project's). Set `false` to read forks too | `true` | No |
 | `CODE_SCANNING_EXCLUDE_REPOS` | Comma-separated bare repo names to skip for code scanning only (others kept) | _(unset)_ | No |
 | `PR_EXCLUDE_QUERY` | Raw GitHub search qualifiers appended to the open-PR search | `-author:app/renovate` | No |
 | `ISSUE_EXCLUDE_QUERY` | Raw GitHub search qualifiers appended to the open-issue search | `-author:app/renovate -label:renovate -label:auto-generated` | No |

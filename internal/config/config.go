@@ -1,9 +1,9 @@
 // Package config parses github-scout configuration from environment
 // variables. The env var names (GITHUB_TOKEN, GITHUB_OWNER, SCAN_INTERVAL,
 // LOOKBACK_HOURS, LOG_LEVEL, EXCLUDE_REPOS, CODE_SCANNING_EXCLUDE_REPOS,
-// PR_EXCLUDE_QUERY, ISSUE_EXCLUDE_QUERY) are an inviolate compose-file
-// contract — the in-memory shape may evolve, but the names and parsing
-// semantics must stay stable.
+// CODE_SCANNING_EXCLUDE_FORKS, PR_EXCLUDE_QUERY, ISSUE_EXCLUDE_QUERY) are an
+// inviolate compose-file contract — the in-memory shape may evolve, but the
+// names and parsing semantics must stay stable.
 //
 // SCAN_INTERVAL is a Go duration string (the shared *_INTERVAL naming
 // convention: DUMP_INTERVAL, SCHEDULE_INTERVAL, SYNC_INTERVAL, …). This app
@@ -47,6 +47,14 @@ const (
 	// auto-generated trackers (gremlins mutation-testing issues carry the
 	// `auto-generated` label) out of the open-issue signal.
 	DefaultIssueExclude = "-author:app/renovate -label:renovate -label:auto-generated"
+	// DefaultCodeScanningExcludeForks skips the code-scanning signal on every
+	// fork. It defaults to true because GitHub reports the alerts of the code a
+	// fork INHERITED as the fork's own, so the findings are upstream's work and
+	// not the owner's: one fork of a large project measured 500 open alerts
+	// against 6 across every first-party repo, drowning the signal it is meant
+	// to raise. Set CODE_SCANNING_EXCLUDE_FORKS=false to read forks too, for an
+	// owner whose forks carry enough of their own code to be worth scanning.
+	DefaultCodeScanningExcludeForks = true
 	// maxScanInterval guards against nonsense configuration (a year between
 	// scans defeats the purpose).
 	maxScanInterval = 365 * 24 * time.Hour
@@ -90,6 +98,14 @@ type Config struct {
 	Lookback time.Duration
 	// LogLevel is parsed from LOG_LEVEL.
 	LogLevel slog.Level
+	// CodeScanningExcludeForks skips the code-scanning signal on every fork,
+	// whatever CodeScanningExcludeRepos lists. It is the batch form of that
+	// list for the one repo property that always warrants the skip, so a NEW
+	// fork is covered the moment it is created rather than when someone
+	// remembers to add its name. Parsed from CODE_SCANNING_EXCLUDE_FORKS
+	// (default true); the skip is identical to the per-name one, so a fork
+	// keeps its runs, PR and issue signals and never marks a scan degraded.
+	CodeScanningExcludeForks bool
 }
 
 // Load reads configuration from the environment with sensible defaults.
@@ -110,6 +126,7 @@ func Load() Config {
 		ScanInterval:             ScanInterval(),
 		Lookback:                 time.Duration(clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)) * time.Hour,
 		LogLevel:                 lvl,
+		CodeScanningExcludeForks: envx.Bool("CODE_SCANNING_EXCLUDE_FORKS", DefaultCodeScanningExcludeForks),
 	}
 }
 

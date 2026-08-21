@@ -106,6 +106,7 @@ type apiRepo struct {
 	} `json:"owner"`
 	Private  bool `json:"private"`
 	Archived bool `json:"archived"`
+	Fork     bool `json:"fork"`
 }
 
 // ListRepos returns every non-archived repo owned by the authenticated
@@ -140,6 +141,7 @@ func (c *Client) ListRepos(ctx context.Context, owner string) ([]ghsignal.Repo, 
 				Name:     r.Name,
 				Private:  r.Private,
 				Archived: r.Archived,
+				Fork:     r.Fork,
 			})
 		}
 		if len(pageRepos) < perPage {

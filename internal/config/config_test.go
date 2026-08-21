@@ -333,3 +333,36 @@ func TestLoadParsesCodeScanningExcludes(t *testing.T) {
 		t.Errorf("EXCLUDE_REPOS must stay independent of CODE_SCANNING_EXCLUDE_REPOS; got %v", cfg.ExcludeRepos)
 	}
 }
+
+// TestCodeScanningExcludeForks pins the CODE_SCANNING_EXCLUDE_FORKS contract in
+// both directions plus its default. The DEFAULT is the load-bearing case: it is
+// true, so an operator who never sets the var gets forks skipped, and a
+// regression flipping it would silently readmit hundreds of upstream alerts.
+func TestCodeScanningExcludeForks(t *testing.T) {
+	for _, tc := range []struct {
+		desc string
+		set  bool
+		raw  string
+		want bool
+	}{
+		{desc: "unset defaults to exclude", set: false, want: DefaultCodeScanningExcludeForks},
+		{desc: "empty is treated as unset", set: true, raw: "", want: DefaultCodeScanningExcludeForks},
+		{desc: "false includes forks", set: true, raw: "false", want: false},
+		{desc: "true excludes forks", set: true, raw: "true", want: true},
+		{desc: "envx accepts 0", set: true, raw: "0", want: false},
+		{desc: "unparseable falls back to the default", set: true, raw: "ture", want: DefaultCodeScanningExcludeForks},
+	} {
+		t.Run(tc.desc, func(t *testing.T) {
+			if tc.set {
+				t.Setenv("CODE_SCANNING_EXCLUDE_FORKS", tc.raw)
+			}
+			if got := Load().CodeScanningExcludeForks; got != tc.want {
+				t.Errorf("Load().CodeScanningExcludeForks with CODE_SCANNING_EXCLUDE_FORKS=%q (set=%v) = %v, want %v",
+					tc.raw, tc.set, got, tc.want)
+			}
+		})
+	}
+	if !DefaultCodeScanningExcludeForks {
+		t.Error("DefaultCodeScanningExcludeForks = false, want true: a fork's alerts are the upstream project's, so the safe default is to skip them")
+	}
+}
