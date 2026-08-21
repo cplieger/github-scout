@@ -63,6 +63,41 @@ func TestListReposFiltersOwnerAndArchived(t *testing.T) {
 	}
 }
 
+// TestListReposCarriesForkFlag pins that the fork bit reaches the domain type.
+// The code-scanning skip is driven entirely by ghsignal.Repo.Fork, so a decode
+// that silently dropped the field would leave every fork readable with the
+// exclude flag on and no test elsewhere would notice: the collector tests build
+// their repos by hand. A fork must NOT be filtered out of discovery — it keeps
+// its runs, PR and issue signals — so the count stays 2 here.
+func TestListReposCarriesForkFlag(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"name":"own","owner":{"login":"cplieger"},"fork":false},
+			{"name":"forked","owner":{"login":"cplieger"},"fork":true}
+		]`))
+	}))
+	defer srv.Close()
+
+	repos, err := newTestClient(t, srv).ListRepos(t.Context(), "cplieger")
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if len(repos) != 2 {
+		t.Fatalf("got %d repos, want 2 (a fork is discovered, not filtered)", len(repos))
+	}
+	forks := map[string]bool{}
+	for _, r := range repos {
+		forks[r.Name] = r.Fork
+	}
+	if forks["own"] {
+		t.Errorf("ListRepos(own).Fork = true, want false")
+	}
+	if !forks["forked"] {
+		t.Errorf("ListRepos(forked).Fork = false, want true")
+	}
+}
+
 func TestListReposPaginates(t *testing.T) {
 	// Page 1 returns a full page (100) → client must fetch page 2.
 	var full strings.Builder

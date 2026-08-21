@@ -132,6 +132,131 @@ func TestScanCodeScanningExcludeSkipsSignalNotRepo(t *testing.T) {
 	}
 }
 
+// TestScanCodeScanningExcludeForksSkipsSignalNotRepo pins
+// CODE_SCANNING_EXCLUDE_FORKS: a FORK has its code-scanning read skipped
+// entirely without being named in CODE_SCANNING_EXCLUDE_REPOS, because GitHub
+// reports the alerts of the code the fork inherited as the fork's own. The skip
+// must be indistinguishable from the per-name one: no API call, no failure,
+// nothing counted toward degraded, and every other signal intact. A
+// non-fork in the same scan is still read, so the flag cannot silence
+// first-party repos.
+func TestScanCodeScanningExcludeForksSkipsSignalNotRepo(t *testing.T) {
+	fc := &fakeClient{
+		repos: []ghsignal.Repo{
+			{Owner: "cplieger", Name: "loki", Fork: true},
+			{Owner: "cplieger", Name: "subflux"},
+		},
+		runs: map[string][]ghsignal.WorkflowRun{
+			"cplieger/loki": {{Repo: "cplieger/loki", RunID: 1, Conclusion: "failure", CreatedAt: fixedNow().Add(-time.Hour)}},
+		},
+		// The fork's inherited alerts would be returned if it were read at all,
+		// so a non-zero "code scanning alert" count from it fails the test.
+		alerts: map[string][]ghsignal.CodeScanningAlert{
+			"cplieger/loki":    {{Repo: "cplieger/loki", Number: 1}, {Repo: "cplieger/loki", Number: 2}},
+			"cplieger/subflux": {{Repo: "cplieger/subflux", Number: 9}},
+		},
+	}
+	c := New(&Deps{
+		Client:                   fc,
+		Logger:                   slog.New(slog.NewTextHandler(testWriter{t}, nil)),
+		Now:                      fixedNow,
+		Owner:                    "cplieger",
+		Lookback:                 72 * time.Hour,
+		CodeScanningExcludeForks: true,
+	})
+	rec := newRecordingHandler()
+	c.logger = slog.New(rec)
+	c.Scan(t.Context())
+
+	// Only the non-fork's alert is emitted; the fork's two are never read.
+	if n := rec.CountExact("code scanning alert"); n != 1 {
+		t.Errorf("code scanning alert count = %d, want 1 (only the non-fork is read)", n)
+	}
+	if v, ok := rec.AttrValue("scan complete", "code_alerts"); !ok || v != "1" {
+		t.Errorf("scan complete code_alerts = %q, want 1 (the fork's alerts must not be counted)", v)
+	}
+	// Skipping a fork is not a failure: it must not degrade or escalate.
+	if rec.HasAttr("scan complete", "degraded", "true") {
+		t.Errorf("skipping a fork's code scanning must not mark the scan degraded")
+	}
+	if got, _ := rec.AttrValue("scan complete", "failed_signals"); got != "" {
+		t.Errorf("failed_signals = %q, want empty (a skipped fork is not a failed signal)", got)
+	}
+	if n := rec.CountExact("scan degraded"); n != 0 {
+		t.Errorf("scan degraded count = %d, want 0 (skipping a fork must not escalate)", n)
+	}
+	// The fork keeps every other signal: its runs are still scanned.
+	if n := rec.CountExact("workflow run"); n != 1 {
+		t.Errorf("workflow run count = %d, want 1 (a fork's own runs are still scanned)", n)
+	}
+}
+
+// TestScanCodeScanningIncludesForksWhenFlagOff pins the OTHER side of the flag,
+// which is what makes it a knob rather than a hardcoded rule: with
+// CODE_SCANNING_EXCLUDE_FORKS off and the fork unnamed in the exclude set, the
+// fork's alerts ARE read. Without this the flag could be stuck on and every
+// assertion above would still pass.
+func TestScanCodeScanningIncludesForksWhenFlagOff(t *testing.T) {
+	fc := &fakeClient{
+		repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "loki", Fork: true}},
+		alerts: map[string][]ghsignal.CodeScanningAlert{"cplieger/loki": {{Repo: "cplieger/loki", Number: 1}}},
+	}
+	c := New(&Deps{
+		Client:                   fc,
+		Logger:                   slog.New(slog.NewTextHandler(testWriter{t}, nil)),
+		Now:                      fixedNow,
+		Owner:                    "cplieger",
+		Lookback:                 72 * time.Hour,
+		CodeScanningExcludeForks: false,
+	})
+	rec := newRecordingHandler()
+	c.logger = slog.New(rec)
+	c.Scan(t.Context())
+
+	if n := rec.CountExact("code scanning alert"); n != 1 {
+		t.Errorf("code scanning alert count = %d, want 1 (a fork is read when the flag is off)", n)
+	}
+}
+
+// TestScanCodeScanningExcludeForksIsIndependentOfExcludeRepos pins that the two
+// mechanisms are independent: the batch flag covers a fork nobody named, and the
+// name list still covers a NON-fork. Neither subsumes the other, so a regression
+// that collapsed them into one condition fails here.
+func TestScanCodeScanningExcludeForksIsIndependentOfExcludeRepos(t *testing.T) {
+	fc := &fakeClient{
+		repos: []ghsignal.Repo{
+			{Owner: "cplieger", Name: "loki", Fork: true},
+			{Owner: "cplieger", Name: "private"},
+			{Owner: "cplieger", Name: "subflux"},
+		},
+		// Both skipped repos would error if read; neither error may surface.
+		alertsErr: map[string]error{
+			"cplieger/loki":    errors.New("alerts 403"),
+			"cplieger/private": errors.New("alerts 403"),
+		},
+		alerts: map[string][]ghsignal.CodeScanningAlert{"cplieger/subflux": {{Repo: "cplieger/subflux", Number: 1}}},
+	}
+	c := New(&Deps{
+		Client:                   fc,
+		Logger:                   slog.New(slog.NewTextHandler(testWriter{t}, nil)),
+		Now:                      fixedNow,
+		Owner:                    "cplieger",
+		Lookback:                 72 * time.Hour,
+		CodeScanningExclude:      map[string]bool{"private": true},
+		CodeScanningExcludeForks: true,
+	})
+	rec := newRecordingHandler()
+	c.logger = slog.New(rec)
+	c.Scan(t.Context())
+
+	if rec.HasAttr("scan complete", "degraded", "true") {
+		t.Errorf("neither a fork nor a named repo may mark the scan degraded")
+	}
+	if n := rec.CountExact("code scanning alert"); n != 1 {
+		t.Errorf("code scanning alert count = %d, want 1 (only the first-party non-fork is read)", n)
+	}
+}
+
 func TestScanPartialFailuresStillHealthy(t *testing.T) {
 	// PR search, issue search, run listing, and alert listing all error, but
 	// discovery succeeded — the scan must stay healthy while REPORTING the

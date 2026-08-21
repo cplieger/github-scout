@@ -203,15 +203,16 @@ func buildCollector(cfg *config.Config) (*collect.Collector, *http.Client) {
 		CondCachePath: condCachePath,
 	})
 	collector := collect.New(&collect.Deps{
-		Client:              gh,
-		Logger:              slog.Default(),
-		Owner:               cfg.Owner,
-		Lookback:            cfg.Lookback,
-		Exclude:             cfg.ExcludeRepos,
-		CodeScanningExclude: cfg.CodeScanningExcludeRepos,
-		PRExclude:           cfg.PRExclude,
-		IssueExclude:        cfg.IssueExclude,
-		StatePath:           seenStatePath,
+		Client:                   gh,
+		Logger:                   slog.Default(),
+		Owner:                    cfg.Owner,
+		Lookback:                 cfg.Lookback,
+		Exclude:                  cfg.ExcludeRepos,
+		CodeScanningExclude:      cfg.CodeScanningExcludeRepos,
+		CodeScanningExcludeForks: cfg.CodeScanningExcludeForks,
+		PRExclude:                cfg.PRExclude,
+		IssueExclude:             cfg.IssueExclude,
+		StatePath:                seenStatePath,
 	})
 	return collector, httpClient
 }

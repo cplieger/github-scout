@@ -15,6 +15,14 @@
 //     stops appearing in later snapshots, so the dashboard reads the most
 //     recent scan as "what is open right now" — no dedup state needed.
 //
+// Code scanning has two skip rules the other signals do not, both leaving the
+// repo's runs / PR / issue signals intact: every FORK is skipped by default
+// (CODE_SCANNING_EXCLUDE_FORKS), because GitHub reports the alerts of the code
+// a fork inherited as the fork's own, and named repos are skipped
+// (CODE_SCANNING_EXCLUDE_REPOS) for a code-scanning API that always fails
+// expectedly. Neither counts as a readable signal nor as a failure, so a
+// skipped repo can neither mark a scan degraded nor mask a real blackout.
+//
 // The only cross-scan state is the run dedup set. Production (main.go) sets
 // Deps.StatePath wherever a scan runs -- the scheduled daemon and every
 // one-shot `trigger` process -- so the set is persisted to a small JSON
@@ -60,6 +68,7 @@ type Collector struct {
 	issueExclude string // raw search qualifiers to filter issue noise (Renovate, auto-generated)
 	statePath    string // optional path to persist `seen` across trigger processes ("" = in-memory only)
 	lookback     time.Duration
+	csSkipForks  bool // skip code scanning on every fork, whatever csExclude lists
 }
 
 // apiClient is the consumer-side view of the GitHub client the collector
@@ -93,6 +102,12 @@ type Deps struct {
 	// Leave empty only for in-memory-only dedup (used in tests).
 	StatePath string
 	Lookback  time.Duration
+	// CodeScanningExcludeForks skips the code-scanning signal on every fork.
+	// It is the batch form of CodeScanningExclude for the one repo property
+	// that always warrants the skip: GitHub reports a fork's INHERITED alerts
+	// as its own, so they are upstream's findings, not this owner's. The skip
+	// is identical to the per-name one, so the fork keeps every other signal.
+	CodeScanningExcludeForks bool
 }
 
 // New constructs a Collector. When Deps.StatePath is set, the persisted run
@@ -115,6 +130,7 @@ func New(d *Deps) *Collector {
 		seen:         make(map[int64]time.Time),
 		exclude:      d.Exclude,
 		csExclude:    d.CodeScanningExclude,
+		csSkipForks:  d.CodeScanningExcludeForks,
 		owner:        d.Owner,
 		prExclude:    d.PRExclude,
 		issueExclude: d.IssueExclude,
@@ -188,13 +204,16 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 		newRuns += runs
 		newFailures += failures
 		ig.recordRuns(runErr)
-		if c.codeScanningExcluded(repo.Name) {
-			// Code scanning is intentionally skipped for this repo (e.g. a
-			// private repo without GitHub Advanced Security, whose API always
-			// 403s). Treat it like a repo with no code scanning: neither a
+		if c.codeScanningExcluded(repo) {
+			// Code scanning is intentionally skipped for this repo: it is either
+			// named in CODE_SCANNING_EXCLUDE_REPOS (e.g. a private repo without
+			// GitHub Advanced Security, whose API always 403s) or a fork under
+			// CODE_SCANNING_EXCLUDE_FORKS (whose alerts belong to the upstream
+			// project). Treat it like a repo with no code scanning: neither a
 			// readable signal nor a failure, so it never marks the scan degraded
 			// nor dilutes the "blind for every repo" test. Other signals stand.
-			c.logger.Debug("skipping code scanning for excluded repo", "repo", repo.FullName())
+			c.logger.Debug("skipping code scanning for excluded repo",
+				"repo", repo.FullName(), "fork", repo.Fork)
 		} else {
 			a, alertErr := c.collectAlerts(ctx, repo)
 			alerts += a
@@ -379,15 +398,24 @@ func isShutdown(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// codeScanningExcluded reports whether a repo's code-scanning signal should be
-// skipped because the repo is in CODE_SCANNING_EXCLUDE_REPOS. Unlike
-// excludedName (which drops a repo from EVERY signal), this leaves the repo's
-// runs / PR / issue signals intact and only suppresses the code-scanning read
-// — for repos whose code-scanning API always fails expectedly (a private repo
-// without GitHub Advanced Security 403s every scan). Lowercases its argument
-// because the set (parseExcludes) is keyed by lowercased names.
-func (c *Collector) codeScanningExcluded(name string) bool {
-	return c.csExclude[strings.ToLower(name)]
+// codeScanningExcluded reports whether repo's code-scanning signal should be
+// skipped, for either of the two reasons that warrant it. Unlike excludedName
+// (which drops a repo from EVERY signal), this leaves the repo's runs / PR /
+// issue signals intact and only suppresses the code-scanning read.
+//
+//   - The repo is a FORK and CODE_SCANNING_EXCLUDE_FORKS is set (the default):
+//     GitHub reports the alerts of the code the fork inherited as the fork's
+//     own, so the findings are the upstream project's, not this owner's. This
+//     is the batch rule, and it covers a fork the moment it is created.
+//   - The repo is named in CODE_SCANNING_EXCLUDE_REPOS: for repos whose
+//     code-scanning API always fails expectedly (a private repo without GitHub
+//     Advanced Security 403s every scan). The name lookup lowercases its
+//     argument because the set (parseExcludes) is keyed by lowercased names.
+//
+// Both reasons produce the identical outcome at the call site, which is what
+// keeps a skipped repo out of the integrity verdict either way.
+func (c *Collector) codeScanningExcluded(repo *ghsignal.Repo) bool {
+	return (c.csSkipForks && repo.Fork) || c.csExclude[strings.ToLower(repo.Name)]
 }
 
 // prune drops run dedup entries older than cutoff. The Actions query

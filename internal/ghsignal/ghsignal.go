@@ -72,6 +72,12 @@ type Repo struct {
 	// Archived repos are skipped: no new runs, and old signals are not
 	// actionable.
 	Archived bool `json:"archived"`
+	// Fork reports whether the repo is a fork of another project. It exists
+	// for the code-scanning signal: GitHub reports the alerts of the code a
+	// fork INHERITED as the fork's own, so a fork of a large project surfaces
+	// hundreds of findings in code the owner did not write. Runs, PRs and
+	// issues on a fork are the owner's own work and are never skipped for it.
+	Fork bool `json:"fork"`
 }
 
 // FullName returns the canonical "owner/name" identifier.
