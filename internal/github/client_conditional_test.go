@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/cplieger/github-scout/internal/model"
-	"github.com/cplieger/httpx/v4"
+	"github.com/cplieger/httpx/v5"
 )
 
 // condServer is an httptest server that serves body with an ETag and answers

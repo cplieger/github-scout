@@ -29,7 +29,7 @@ import (
 	"slices"
 	"time"
 
-	"github.com/cplieger/runesafe"
+	"github.com/cplieger/runesafe/v2"
 )
 
 // ErrNoCodeScanning marks a repo that has no code-scanning analyses — GitHub

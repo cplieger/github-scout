@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/cplieger/github-scout/internal/model"
-	"github.com/cplieger/httpx/v4"
+	"github.com/cplieger/httpx/v5"
 )
 
 // newTestClient wires a Client at the test server's URL with a short-timeout
