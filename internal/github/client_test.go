@@ -14,13 +14,21 @@ import (
 
 	"github.com/cplieger/github-scout/internal/ghsignal"
 	"github.com/cplieger/httpx/v5"
+	"github.com/cplieger/slogx/capture"
 )
 
 // newTestClient wires a Client at the test server's URL with a short-timeout
 // http.Client so tests never hang.
 func newTestClient(t *testing.T, srv *httptest.Server) *Client {
 	t.Helper()
-	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: slog.Default()})
+	return newTestClientWithLogger(t, srv, slog.Default())
+}
+
+// newTestClientWithLogger is newTestClient with a caller-supplied logger, for
+// the paths whose only observable output is the log line they emit.
+func newTestClientWithLogger(t *testing.T, srv *httptest.Server, logger *slog.Logger) *Client {
+	t.Helper()
+	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", Logger: logger})
 	c.baseURL = srv.URL
 	return c
 }
@@ -479,7 +487,8 @@ func TestListReposStopsAtMaxPages(t *testing.T) {
 		`{"name":"r%d","owner":{"login":"cplieger"}}`))
 	defer srv.Close()
 
-	repos, err := newTestClient(t, srv).ListRepos(t.Context(), "cplieger")
+	logger, rec := capture.New()
+	repos, err := newTestClientWithLogger(t, srv, logger).ListRepos(t.Context(), "cplieger")
 	if err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}
@@ -488,6 +497,16 @@ func TestListReposStopsAtMaxPages(t *testing.T) {
 	}
 	if len(repos) != maxPages*perPage {
 		t.Errorf("got %d repos, want %d", len(repos), maxPages*perPage)
+	}
+	// The warning is the only signal an operator gets that the scan universe
+	// was capped, so it must name the ceiling actually scanned: 5 pages of
+	// 100 repos.
+	const warning = "repo listing hit pagination bound; scan universe may be truncated"
+	if got := rec.CountExact(warning); got != 1 {
+		t.Errorf("ListRepos over the page cap emitted %d truncation warnings, want 1", got)
+	}
+	if got, ok := rec.AttrValueExact(warning, "repo_cap"); !ok || got != "500" {
+		t.Errorf("truncation warning repo_cap = %q (present=%v), want %q", got, ok, "500")
 	}
 }
 
@@ -518,7 +537,8 @@ func TestSearchStopsAtMaxPages(t *testing.T) {
 		`{"number":%d,"repository_url":"https://api.github.com/repos/cplieger/a","user":{"login":"cplieger"}}`))
 	defer srv.Close()
 
-	prs, err := newTestClient(t, srv).SearchOpenPRs(t.Context(), "cplieger", "")
+	logger, rec := capture.New()
+	prs, err := newTestClientWithLogger(t, srv, logger).SearchOpenPRs(t.Context(), "cplieger", "")
 	if err != nil {
 		t.Fatalf("SearchOpenPRs: %v", err)
 	}
@@ -527,6 +547,15 @@ func TestSearchStopsAtMaxPages(t *testing.T) {
 	}
 	if len(prs) != maxPages*perPage {
 		t.Errorf("got %d PRs, want %d", len(prs), maxPages*perPage)
+	}
+	// A partial snapshot is only distinguishable from a complete one by this
+	// warning, so it must name the ceiling actually searched: 5 pages of 100.
+	const warning = "search hit pagination bound; snapshot may be truncated"
+	if got := rec.CountExact(warning); got != 1 {
+		t.Errorf("search over the page cap emitted %d truncation warnings, want 1", got)
+	}
+	if got, ok := rec.AttrValueExact(warning, "item_cap"); !ok || got != "500" {
+		t.Errorf("truncation warning item_cap = %q (present=%v), want %q", got, ok, "500")
 	}
 }
 

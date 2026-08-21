@@ -459,6 +459,11 @@ func TestStatePersistsDedupAcrossProcesses(t *testing.T) {
 	if got := rec1.CountExact("dedup state save failed"); got != 0 {
 		t.Errorf("successful state save emitted %d save-failure warnings, want 0", got)
 	}
+	// Nor the marshal-failure warning: the whole scan is read through its log
+	// stream, so a healthy save has to be silent about both halves.
+	if got := rec1.CountExact("dedup state marshal failed"); got != 0 {
+		t.Errorf("successful state save emitted %d marshal-failure warnings, want 0", got)
+	}
 
 	c2, rec2 := mk() // fresh "process", same state file
 	c2.Scan(t.Context())
