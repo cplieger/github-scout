@@ -8,12 +8,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/cplieger/github-scout/internal/ghsignal"
 	"github.com/cplieger/httpx/v5"
+	"github.com/cplieger/slogx/capture"
 )
 
 // condServer is an httptest server that serves body with an ETag and answers
@@ -320,5 +322,126 @@ func TestCondCache_persistEvictsOldestWhenOverBound(t *testing.T) {
 	newestKey := filepath.Join("https://example.test/page", string(rune('A'+69)))
 	if _, ok := entries[newestKey]; !ok {
 		t.Error("newest entry was evicted; eviction must drop oldest-first")
+	}
+}
+
+// TestCondCache_lastModifiedOnlyIsRevalidatable pins that a representation
+// validated only by Last-Modified is cached like an ETag'd one. Several GitHub
+// endpoints answer without an ETag, and treating those as unrevalidatable
+// would spend a full-price GET on every scan forever.
+func TestCondCache_lastModifiedOnlyIsRevalidatable(t *testing.T) {
+	const (
+		reqURL       = "https://example.test/user/repos"
+		lastModified = "Fri, 21 Aug 2026 15:35:00 GMT"
+	)
+	c := newCondCache("", slog.Default())
+	c.store(reqURL, httpx.Validators{LastModified: lastModified}, []string{"keep"})
+
+	got := c.validators(reqURL)
+	if got.LastModified != lastModified {
+		t.Errorf("validators(%q).LastModified = %q, want %q", reqURL, got.LastModified, lastModified)
+	}
+	if got.ETag != "" {
+		t.Errorf("validators(%q).ETag = %q, want empty", reqURL, got.ETag)
+	}
+	var items []string
+	if !c.decodeInto(reqURL, &items) {
+		t.Fatalf("decodeInto(%q) = false, want the stored items re-servable on a 304", reqURL)
+	}
+	if len(items) != 1 || items[0] != "keep" {
+		t.Errorf("decodeInto(%q) items = %v, want [keep]", reqURL, items)
+	}
+}
+
+// TestCondCache_successfulSaveIsSilent pins that a healthy save emits nothing.
+// The watcher is read entirely through its log stream, so a line on the
+// success path would report a broken cache on every single scan.
+func TestCondCache_successfulSaveIsSilent(t *testing.T) {
+	logger, rec := capture.New()
+	c := newCondCache(filepath.Join(t.TempDir(), "cond-cache.json"), logger)
+	c.store("https://example.test/user/repos", httpx.Validators{ETag: `W/"v1"`}, []string{"keep"})
+
+	if rec.Len() != 0 {
+		t.Errorf("a successful cache save logged %d line(s) %v, want none", rec.Len(), rec.Messages())
+	}
+}
+
+// TestCondCache_saveKeepsAnotherProcessesEntries pins the merge under the
+// slot's flock: an entry written by a concurrent process after this cache
+// loaded — the scheduled daemon racing a hand-exec'd trigger — must survive
+// this process's save instead of being overwritten away.
+func TestCondCache_saveKeepsAnotherProcessesEntries(t *testing.T) {
+	const (
+		mine  = "https://example.test/mine"
+		other = "https://example.test/other"
+	)
+	path := filepath.Join(t.TempDir(), "cond-cache.json")
+	c := newCondCache(path, slog.Default()) // loads cold: memory holds nothing
+
+	// The other process writes its entry after this cache loaded, so the only
+	// copy of it is the one on disk.
+	persisted, err := json.Marshal(map[string]cacheEntry{
+		other: {ETag: `W/"other"`, Items: json.RawMessage(`["o"]`), UsedAt: time.Now().Add(-time.Hour)},
+	})
+	if err != nil {
+		t.Fatalf("setup: marshal the other process's entry: %v", err)
+	}
+	if err := os.WriteFile(path, persisted, 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	c.store(mine, httpx.Validators{ETag: `W/"mine"`}, []string{"m"})
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read the cache file back: %v", err)
+	}
+	var merged map[string]cacheEntry
+	if err := json.Unmarshal(data, &merged); err != nil {
+		t.Fatalf("cache file does not parse after the save: %v (%s)", err, data)
+	}
+	if _, ok := merged[other]; !ok {
+		t.Errorf("save dropped the concurrently written entry %q; file holds %d entry/entries", other, len(merged))
+	}
+	if _, ok := merged[mine]; !ok {
+		t.Errorf("save did not persist this process's entry %q", mine)
+	}
+}
+
+// TestCondCache_payloadExactlyAtTheBoundIsKeptWhole pins the inclusive edge of
+// the persisted-size cap: a payload marshaling to exactly the bound still
+// reads back whole, so evicting from it would discard a usable validator for
+// no gain.
+func TestCondCache_payloadExactlyAtTheBoundIsKeptWhole(t *testing.T) {
+	// Sized so the marshaled map lands exactly on the cap. UsedAt is fixed
+	// and carries no trailing-zero nanoseconds, so its encoding is a stable
+	// width; the guard below fails loudly if the entry shape ever changes.
+	const padding = 61339
+	const reqURL = "https://example.test/p"
+	entries := map[string]cacheEntry{
+		reqURL: {
+			ETag:   `W/"x"`,
+			Items:  json.RawMessage(`["` + strings.Repeat("a", padding) + `"]`),
+			UsedAt: time.Date(2026, 8, 21, 15, 35, 0, 123456789, time.UTC),
+		},
+	}
+	raw, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatalf("setup: marshal fixture: %v", err)
+	}
+	if len(raw) != condCacheMaxBytes {
+		t.Fatalf("fixture drifted: entry marshals to %d bytes, want exactly %d (adjust padding by %d)",
+			len(raw), condCacheMaxBytes, condCacheMaxBytes-len(raw))
+	}
+
+	data, err := marshalBounded(entries)
+	if err != nil {
+		t.Fatalf("marshalBounded: %v", err)
+	}
+	if _, ok := entries[reqURL]; !ok {
+		t.Errorf("a payload of exactly %d bytes was evicted, want it retained", condCacheMaxBytes)
+	}
+	if len(data) != condCacheMaxBytes {
+		t.Errorf("marshalBounded returned %d bytes, want the whole %d-byte payload", len(data), condCacheMaxBytes)
 	}
 }
