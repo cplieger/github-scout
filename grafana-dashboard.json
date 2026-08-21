@@ -69,7 +69,7 @@
     {
       "id": 10,
       "title": "Open PRs",
-      "description": "Pull requests open across all repos right now (most recent scan). Renovate PRs are excluded by github-scout. Click into the table below to review.",
+      "description": "Pull requests open across all repos right now, read from the most recent scan's own summary count. Renovate PRs are excluded by github-scout. Click into the table below to review. The tile reads the summary line rather than counting the item lines, so it stays a single Loki series and cannot hit the datasource's max_query_series ceiling however many PRs are open — do not rewrite it back to counting rows.",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -127,7 +127,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "count(count by (repo, number) (count_over_time({container=\"github-scout\"} | json | msg=`open pull request` [$window])))",
+          "expr": "sum(max_over_time({container=\"github-scout\"} |= `scan complete` | json msg=\"msg\", open_prs=\"open_prs\" | msg=`scan complete` | unwrap open_prs [$window]))",
           "queryType": "instant"
         }
       ]
@@ -135,7 +135,7 @@
     {
       "id": 11,
       "title": "Open Issues",
-      "description": "Issues open across all repos right now (most recent scan). Renovate and auto-generated trackers are excluded by github-scout.",
+      "description": "Issues open across all repos right now, read from the most recent scan's own summary count. Renovate and auto-generated trackers are excluded by github-scout. The tile reads the summary line rather than counting the item lines, so it stays a single Loki series and cannot hit the datasource's max_query_series ceiling however many issues are open — do not rewrite it back to counting rows.",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -193,7 +193,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "count(count by (repo, number) (count_over_time({container=\"github-scout\"} | json | msg=`open issue` [$window])))",
+          "expr": "sum(max_over_time({container=\"github-scout\"} |= `scan complete` | json msg=\"msg\", open_issues=\"open_issues\" | msg=`scan complete` | unwrap open_issues [$window]))",
           "queryType": "instant"
         }
       ]
@@ -201,7 +201,7 @@
     {
       "id": 12,
       "title": "Code Scanning Alerts",
-      "description": "Open CodeQL / code-scanning alerts across all repos right now. Any open alert is worth a look; details and severity in the table below. A 0 here means 'no open alerts' ONLY when the latest scan was healthy — check the Scan Integrity tile, because a degraded scan can report 0 simply because it could not read code scanning.",
+      "description": "Open code-scanning alerts across all repos right now, read from the most recent scan's own summary count. Any open alert is worth a look; details and severity in the table below. The tile takes the highest count in the snapshot window, so one degraded scan reporting 0 cannot blank it, but a code-scanning read that stays blind eventually reads 0: treat a 0 as 'no open alerts' only when the Scan Integrity tile beside it is green. Reading the summary line rather than counting the item lines keeps this a single Loki series, so it cannot hit the datasource's max_query_series ceiling however many alerts exist. Do not rewrite it back to counting rows; that is what broke when one forked repo contributed 500 inherited upstream alerts.",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -259,7 +259,7 @@
             "type": "loki",
             "uid": "${datasource}"
           },
-          "expr": "count(count by (repo, number) (count_over_time({container=\"github-scout\"} | json | msg=`code scanning alert` [$window])))",
+          "expr": "sum(max_over_time({container=\"github-scout\"} |= `scan complete` | json msg=\"msg\", code_alerts=\"code_alerts\" | msg=`scan complete` | unwrap code_alerts [$window]))",
           "queryType": "instant"
         }
       ]
@@ -267,7 +267,7 @@
     {
       "id": 13,
       "title": "Failed CI runs (range)",
-      "description": "Distinct failed / timed-out / startup-failed Actions runs in the selected time range, deduplicated by run ID. Unlike the other tiles, this one follows the time picker. Non-zero means CI broke somewhere; the table below has the links.",
+      "description": "Distinct failed / timed-out / startup-failed Actions runs in the selected time range, deduplicated by run ID. Unlike the other tiles, this one follows the time picker. Non-zero means CI broke somewhere; the table below has the links. Deduplicating by run ID is what makes the count exact, and it costs one Loki series per distinct run, so this tile shares the table's max_query_series ceiling (Loki's default is 500). Prefer raising that ceiling over dropping the dedup: counting log lines instead would double-count every run re-emitted after a container recreate.",
       "type": "stat",
       "gridPos": {
         "h": 4,
@@ -805,7 +805,7 @@
     {
       "id": 22,
       "title": "Code Scanning Alerts",
-      "description": "Open CodeQL / code-scanning alerts across all repos as of the most recent scan (last $window). Click the Link column to investigate on GitHub. Severity is GitHub's security severity; repos without code scanning are silently skipped.",
+      "description": "Open code-scanning alerts across all repos as of the most recent scan (last $window). Click the Link column to investigate on GitHub. Severity is GitHub's security severity; repos without code scanning are silently skipped. One row is one Loki series, so this table is bounded by the datasource's max_query_series ceiling (Loki's default is 500) and errors rather than truncating once the open-alert count crosses it. A forked repo reports the upstream project's alerts as its own and can exceed that ceiling by itself, so list forks in CODE_SCANNING_EXCLUDE_REPOS to keep this table to work you own. The tile above is immune either way.",
       "type": "table",
       "gridPos": {
         "h": 8,
@@ -1066,7 +1066,7 @@
     {
       "id": 30,
       "title": "Failed Runs",
-      "description": "Failed / timed-out / startup-failed Actions runs across all repos in the selected time range, deduplicated by run ID, newest first. Click the Link column to open the run on GitHub. Successful runs are deliberately omitted; this view is for what broke. github-scout looks back LOOKBACK_HOURS (default 72h), so set the picker within that.",
+      "description": "Failed / timed-out / startup-failed Actions runs across all repos in the selected time range, deduplicated by run ID, newest first. Click the Link column to open the run on GitHub. Successful runs are deliberately omitted; this view is for what broke. github-scout looks back LOOKBACK_HOURS (default 72h), so set the picker within that. One row is one Loki series, so this table is bounded by the datasource's max_query_series ceiling (Loki's default is 500) and errors rather than truncating past it. github-scout keeps its run dedup set in /tmp, so a container recreate re-emits every run in the lookback window at once: for the next LOOKBACK_HOURS a wide picker can hold several times the real failure count and cross the ceiling. Narrow the picker, or raise the ceiling on the Loki side.",
       "type": "table",
       "gridPos": {
         "h": 10,
