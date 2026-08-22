@@ -21,11 +21,16 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "")
 
 	cfg := Load()
-	if cfg.ScanInterval != DefaultScanInterval {
-		t.Errorf("ScanInterval = %v, want %v", cfg.ScanInterval, DefaultScanInterval)
+
+	// Expected values are written out rather than read back from the
+	// constants they check: an assertion against DefaultScanInterval moves
+	// with any edit to it and so pins nothing. 15m and 72h are the cadence
+	// and window the compose contract and the bundled dashboard assume.
+	if cfg.ScanInterval != 15*time.Minute {
+		t.Errorf("ScanInterval = %v, want 15m0s", cfg.ScanInterval)
 	}
-	if cfg.Lookback != DefaultLookbackHours*time.Hour {
-		t.Errorf("Lookback = %v, want %v", cfg.Lookback, DefaultLookbackHours*time.Hour)
+	if cfg.Lookback != 72*time.Hour {
+		t.Errorf("Lookback = %v, want 72h0m0s", cfg.Lookback)
 	}
 	if cfg.LogLevel != slog.LevelInfo {
 		t.Errorf("LogLevel = %v, want Info", cfg.LogLevel)
@@ -82,8 +87,8 @@ func TestScanIntervalSentinelsFallBackToDefault(t *testing.T) {
 		t.Run(v, func(t *testing.T) {
 			rec := captureDefaultSlog(t)
 			t.Setenv("SCAN_INTERVAL", v)
-			if got := Load().ScanInterval; got != DefaultScanInterval {
-				t.Errorf("SCAN_INTERVAL=%q ScanInterval = %v, want default %v", v, got, DefaultScanInterval)
+			if got := Load().ScanInterval; got != 15*time.Minute {
+				t.Errorf("SCAN_INTERVAL=%q ScanInterval = %v, want default 15m0s", v, got)
 			}
 			if n := rec.CountExact("invalid SCAN_INTERVAL, using default"); n != 1 {
 				t.Errorf("SCAN_INTERVAL=%q warned %d times, want exactly 1", v, n)
@@ -99,6 +104,10 @@ func TestScanIntervalParsesDuration(t *testing.T) {
 	}
 }
 
+// TestClampingAndFallbacks pins every out-of-range and unparseable input to the
+// duration it actually yields. Each want is a literal, never the constant the
+// clamp reads: a want written as `maxScanInterval` holds however that constant
+// is edited, so the bound it claims to check is unpinned.
 func TestClampingAndFallbacks(t *testing.T) {
 	tests := []struct {
 		selector func(Config) time.Duration
@@ -107,14 +116,14 @@ func TestClampingAndFallbacks(t *testing.T) {
 		val      string
 		want     time.Duration
 	}{
-		{name: "scan negative falls back to default", key: "SCAN_INTERVAL", val: "-5m", want: DefaultScanInterval, selector: func(c Config) time.Duration { return c.ScanInterval }},
-		{name: "scan garbage falls back to default", key: "SCAN_INTERVAL", val: "abc", want: DefaultScanInterval, selector: func(c Config) time.Duration { return c.ScanInterval }},
-		{name: "scan over max is clamped", key: "SCAN_INTERVAL", val: "10000h", want: maxScanInterval, selector: func(c Config) time.Duration { return c.ScanInterval }},
+		{name: "scan negative falls back to default", key: "SCAN_INTERVAL", val: "-5m", want: 15 * time.Minute, selector: func(c Config) time.Duration { return c.ScanInterval }},
+		{name: "scan garbage falls back to default", key: "SCAN_INTERVAL", val: "abc", want: 15 * time.Minute, selector: func(c Config) time.Duration { return c.ScanInterval }},
+		{name: "scan over max is clamped", key: "SCAN_INTERVAL", val: "10000h", want: 8760 * time.Hour, selector: func(c Config) time.Duration { return c.ScanInterval }}, // 365 days
 		{name: "lookback zero floors to lo=1", key: "LOOKBACK_HOURS", val: "0", want: 1 * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
 		{name: "lookback at lo boundary is kept", key: "LOOKBACK_HOURS", val: "1", want: 1 * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
-		{name: "lookback negative falls back to default", key: "LOOKBACK_HOURS", val: "-1", want: DefaultLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
-		{name: "lookback at hi boundary is kept", key: "LOOKBACK_HOURS", val: "720", want: maxLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
-		{name: "lookback over max is clamped", key: "LOOKBACK_HOURS", val: "100000", want: maxLookbackHours * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
+		{name: "lookback negative falls back to default", key: "LOOKBACK_HOURS", val: "-1", want: 72 * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
+		{name: "lookback at hi boundary is kept", key: "LOOKBACK_HOURS", val: "720", want: 720 * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }}, // 30 days
+		{name: "lookback over max is clamped", key: "LOOKBACK_HOURS", val: "100000", want: 720 * time.Hour, selector: func(c Config) time.Duration { return c.Lookback }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -131,7 +140,7 @@ func TestClampingAndFallbacks(t *testing.T) {
 // remaining conditional is `clamped != v`, which gates this warning. Asserting
 // the warning fires when (and only when) the value is clamped down makes that
 // guard's mutants (==, removal) killable — the return-value table tests alone
-// cannot see a log-only branch. Guards against the L163 "living mutant".
+// cannot see a log-only branch.
 func TestClampedIntWarnsOverMax(t *testing.T) {
 	capture := func(val string) string {
 		var buf bytes.Buffer
@@ -184,11 +193,15 @@ func TestExcludeQueriesDefaultWhenUnset(t *testing.T) {
 
 	cfg := Load()
 
-	if cfg.PRExclude != DefaultPRExclude {
-		t.Errorf("PRExclude = %q, want default %q", cfg.PRExclude, DefaultPRExclude)
+	const (
+		wantPR    = "-author:app/renovate"
+		wantIssue = "-author:app/renovate -label:renovate -label:auto-generated"
+	)
+	if cfg.PRExclude != wantPR {
+		t.Errorf("PRExclude = %q, want default %q", cfg.PRExclude, wantPR)
 	}
-	if cfg.IssueExclude != DefaultIssueExclude {
-		t.Errorf("IssueExclude = %q, want default %q", cfg.IssueExclude, DefaultIssueExclude)
+	if cfg.IssueExclude != wantIssue {
+		t.Errorf("IssueExclude = %q, want default %q", cfg.IssueExclude, wantIssue)
 	}
 }
 
@@ -236,11 +249,11 @@ func TestLookbackAtMaxIsAcceptedWithoutWarning(t *testing.T) {
 	// (a v >= hi mutant would warn spuriously at the legal maximum).
 	rec := captureDefaultSlog(t)
 
-	t.Setenv("LOOKBACK_HOURS", "720") // == maxLookbackHours
+	t.Setenv("LOOKBACK_HOURS", "720") // the maximum, 30 days
 	cfg := Load()
 
-	if cfg.Lookback != maxLookbackHours*time.Hour {
-		t.Errorf("Lookback = %v, want %v (max accepted as-is)", cfg.Lookback, maxLookbackHours*time.Hour)
+	if cfg.Lookback != 720*time.Hour {
+		t.Errorf("Lookback = %v, want 720h0m0s (max accepted as-is)", cfg.Lookback)
 	}
 	if n := rec.CountExact("env value clamped"); n != 0 {
 		t.Errorf("value at exactly the max should not warn; got %d clamp warnings", n)
@@ -255,8 +268,8 @@ func TestLookbackAboveMaxIsClampedWithWarning(t *testing.T) {
 	t.Setenv("LOOKBACK_HOURS", "721")
 	cfg := Load()
 
-	if cfg.Lookback != maxLookbackHours*time.Hour {
-		t.Errorf("Lookback = %v, want clamped to %v", cfg.Lookback, maxLookbackHours*time.Hour)
+	if cfg.Lookback != 720*time.Hour {
+		t.Errorf("Lookback = %v, want clamped to 720h0m0s", cfg.Lookback)
 	}
 	if n := rec.CountExact("env value clamped"); n != 1 {
 		t.Errorf("value over the max should warn once; got %d clamp warnings", n)
@@ -274,20 +287,22 @@ func captureDefaultSlog(t *testing.T) *capture.Recorder {
 }
 
 // TestScanIntervalBelowMinimumClamped pins the minScanInterval floor: a positive
-// sub-minute SCAN_INTERVAL is clamped up to minScanInterval (1m) so a too-frequent
-// scan of a multi-repo account can't exhaust GitHub's 5000 req/hour budget. The
+// sub-minute SCAN_INTERVAL is clamped up to 1m so a too-frequent scan of a
+// multi-repo account can't exhaust GitHub's 5000 req/hour budget. The
 // existing TestClampingAndFallbacks covers negative/garbage/over-max but no
 // sub-minute case. The "exactly 1m" row is kept via the default branch, pinning
 // the strict `<` lower edge; "2m" confirms an above-floor value passes through.
+// The floor is written as a literal, not as minScanInterval, so the row states
+// what the floor IS rather than restating whatever it has become.
 func TestScanIntervalBelowMinimumClamped(t *testing.T) {
 	tests := []struct {
 		name string
 		val  string
 		want time.Duration
 	}{
-		{"sub-minute clamps up to the floor", "30s", minScanInterval},
-		{"one second below the floor clamps", "59s", minScanInterval},
-		{"exactly at the floor is kept", "1m", minScanInterval},
+		{"sub-minute clamps up to the floor", "30s", time.Minute},
+		{"one second below the floor clamps", "59s", time.Minute},
+		{"exactly at the floor is kept", "1m", time.Minute},
 		{"above the floor is kept", "2m", 2 * time.Minute},
 	}
 	for _, tt := range tests {

@@ -39,8 +39,8 @@ func TestListReposFiltersOwnerAndArchived(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Errorf("Authorization = %q, want Bearer test-token", got)
 		}
-		if got := r.Header.Get("X-GitHub-Api-Version"); got != apiVersion {
-			t.Errorf("api version header = %q, want %q", got, apiVersion)
+		if got := r.Header.Get("X-GitHub-Api-Version"); got != "2022-11-28" {
+			t.Errorf("api version header = %q, want %q", got, "2022-11-28")
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`[
