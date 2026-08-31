@@ -9,6 +9,7 @@
 [![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/cplieger/github-scout/badge)](https://scorecard.dev/viewer/?uri=github.com/cplieger/github-scout)
 [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/github-scout/releases)
 
+<!-- hub-overview BEGIN -->
 One cross-repo view of everything that needs a look across your GitHub repos:
 open pull requests, open issues, code-scanning alerts, and failed Actions runs,
 shipped to Loki and rendered by a ready-made Grafana dashboard, with a
@@ -51,6 +52,7 @@ log collector) and the bundled dashboard gives you:
 It discovers repositories and workflows dynamically on every scan, so a new repo
 (or a new workflow inside an existing one) is picked up automatically with zero
 configuration changes.
+<!-- hub-overview END -->
 
 ## Design
 
