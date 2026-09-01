@@ -73,7 +73,7 @@ func (c *condCache) load() {
 		return
 	}
 	if len(data) == 0 {
-		return // first use: the slot was just created empty
+		return // slot just created, empty
 	}
 	var entries map[string]cacheEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
@@ -142,8 +142,8 @@ func (c *condCache) store(url string, v httpx.Validators, items any) {
 	}
 	data, err := json.Marshal(items)
 	if err != nil {
-		// items just came out of json.Unmarshal, so this cannot realistically
-		// fail; degrade to uncached rather than surfacing an error.
+		// items came straight out of json.Unmarshal; degrade to uncached
+		// rather than surface an error that cannot realistically occur.
 		c.logger.Warn("conditional cache marshal failed; entry not cached", "error", err)
 		return
 	}
@@ -175,7 +175,7 @@ func (c *condCache) persist(snapshot map[string]cacheEntry) {
 		data, err := marshalBounded(merged)
 		if err != nil {
 			marshalErr = err
-			return before // leave the slot untouched (the no-write idiom)
+			return before // leave slot untouched
 		}
 		return data
 	}); err != nil {
@@ -193,7 +193,7 @@ func (c *condCache) persist(snapshot map[string]cacheEntry) {
 func mergeEntries(before []byte, snapshot map[string]cacheEntry) map[string]cacheEntry {
 	var persisted map[string]cacheEntry
 	if len(before) > 0 {
-		_ = json.Unmarshal(before, &persisted) // self-heal: garbage -> empty
+		_ = json.Unmarshal(before, &persisted) // torn/garbage -> empty map
 	}
 	merged := make(map[string]cacheEntry, len(persisted)+len(snapshot))
 	now := time.Now()

@@ -11,7 +11,6 @@ import (
 )
 
 func TestLoadDefaults(t *testing.T) {
-	// No env set → defaults. t.Setenv guarantees a clean, restored env.
 	t.Setenv("GITHUB_TOKEN", "")
 	t.Setenv("GITHUB_OWNER", "")
 	t.Setenv("SCAN_INTERVAL", "")

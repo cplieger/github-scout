@@ -11,10 +11,6 @@ import (
 	"github.com/cplieger/github-scout/internal/ghsignal"
 )
 
-// TestScanCleanScanNotDegraded pins the happy path: when every signal is
-// collected, the summary reports degraded=false / errors=0 / failed_signals=""
-// and no "scan degraded" line fires. This is the baseline the integrity
-// fields must distinguish a real blackout from.
 func TestScanCleanScanNotDegraded(t *testing.T) {
 	fc := &fakeClient{
 		repos:  []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
@@ -40,10 +36,6 @@ func TestScanCleanScanNotDegraded(t *testing.T) {
 	}
 }
 
-// TestScanDegradedReportsBlindCodeScanning verifies that when code-scanning
-// fails for the only repo, the security signal is blind: the scan stays
-// healthy but emits degraded telemetry AND an ERROR "scan degraded" line whose
-// cause is the code-scanning blackout (not auth/rate-limit).
 func TestScanDegradedReportsBlindCodeScanning(t *testing.T) {
 	fc := &fakeClient{
 		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
@@ -66,11 +58,6 @@ func TestScanDegradedReportsBlindCodeScanning(t *testing.T) {
 	}
 }
 
-// TestScanTokenInvalidEscalates: a PERVASIVE 401 — every read this scan is
-// rejected, including both cross-repo searches — is a genuinely dead/blocked
-// token, so it escalates with cause=token_invalid and never flips health (a
-// restart cannot fix a dead token). Contrast TestScanSparse401NotTokenInvalid,
-// where a read still succeeds and the lone 401 is treated as transient.
 func TestScanTokenInvalidEscalates(t *testing.T) {
 	fc := &fakeClient{
 		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "x"}},
@@ -93,15 +80,6 @@ func TestScanTokenInvalidEscalates(t *testing.T) {
 	}
 }
 
-// TestScanSparse401NotTokenInvalid is the regression test for the transient-401
-// misclassification — the bug behind a spurious token_invalid page. A 401 on
-// one repo's code scanning while ANOTHER repo's code scanning reads fine is not
-// a dead token: GitHub returns intermittent 401s under a secondary-rate-limit
-// burst even on a valid token. So the scan stays degraded telemetry only — it
-// lists code_scanning in failed_signals (the integrity tile reddens) but must
-// NOT emit a "scan degraded" escalation, and certainly not cause=token_invalid,
-// because a successful read proves the token works. Before the fix, any single
-// 401 escalated as token_invalid.
 func TestScanSparse401NotTokenInvalid(t *testing.T) {
 	fc := &fakeClient{
 		repos: []ghsignal.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},
@@ -127,11 +105,6 @@ func TestScanSparse401NotTokenInvalid(t *testing.T) {
 	}
 }
 
-// TestScanIncidentalRepoFailureNotEscalated pins the "incidental tolerated,
-// systemic loud" line: with two repos and code-scanning failing for only one
-// (a transient 500), the signal is incomplete (degraded=true, listed in
-// failed_signals) but NOT blind across the board, so it must NOT escalate to
-// an ERROR "scan degraded".
 func TestScanIncidentalRepoFailureNotEscalated(t *testing.T) {
 	fc := &fakeClient{
 		repos:     []ghsignal.Repo{{Owner: "cplieger", Name: "a"}, {Owner: "cplieger", Name: "b"}},

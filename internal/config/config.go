@@ -1,18 +1,6 @@
-// Package config parses github-scout configuration from environment
-// variables. The env var names (GITHUB_TOKEN, GITHUB_OWNER, SCAN_INTERVAL,
-// LOOKBACK_HOURS, LOG_LEVEL, EXCLUDE_REPOS, CODE_SCANNING_EXCLUDE_REPOS,
-// CODE_SCANNING_EXCLUDE_FORKS, PR_EXCLUDE_QUERY, ISSUE_EXCLUDE_QUERY) are an
-// inviolate compose-file contract — the in-memory shape may evolve, but the
-// names and parsing semantics must stay stable.
+// Package config parses github-scout environment configuration.
 //
-// SCAN_INTERVAL is a Go duration string (the shared *_INTERVAL naming
-// convention: DUMP_INTERVAL, SCHEDULE_INTERVAL, SYNC_INTERVAL, …). This app
-// deliberately has NO external-scheduling mode — its stdout is the product,
-// and a scan executed by an external `docker exec` can never reach the
-// container's log stream — so the fleet sentinels (off / disabled / 0) that
-// select external mode elsewhere are simply invalid input here: they warn
-// and fall back to the default cadence, exactly like any other unparseable
-// value. One-shot scans are the `trigger` subcommand's job.
+// This daemon rejects external-scheduling sentinels because external scans cannot write to its log stream.
 package config
 
 import (
@@ -28,87 +16,45 @@ import (
 	"github.com/cplieger/slogx"
 )
 
-// Defaults for env-var-backed fields.
+// Defaults for environment-backed fields.
 const (
-	// DefaultScanInterval is the gap between scans in scheduled mode. 15
-	// minutes keeps the "what just broke" latency low while staying far
-	// under GitHub's authenticated 5000 req/hour budget (a few hundred
-	// calls per scan).
+	// DefaultScanInterval stays within GitHub's authenticated request budget.
 	DefaultScanInterval = 15 * time.Minute
-	// DefaultLookbackHours bounds how far back a scan looks for failures.
-	// 72h means a Friday-night failure is still surfaced on Monday. It
-	// also bounds the in-memory dedup set and the per-repo API page count.
+	// DefaultLookbackHours retains failures across a weekend.
 	DefaultLookbackHours = 72
-	// DefaultPRExclude filters Renovate's PRs out of the open-PR signal.
-	// Renovate PRs are high-volume bot noise, not "needs a human" work.
+	// DefaultPRExclude removes Renovate PR noise.
 	DefaultPRExclude = "-author:app/renovate"
-	// DefaultIssueExclude filters Renovate "Dependency Dashboard" issues
-	// (authored by the repo owner but carrying the `renovate` label) and
-	// auto-generated trackers (gremlins mutation-testing issues carry the
-	// `auto-generated` label) out of the open-issue signal.
+	// DefaultIssueExclude removes Renovate and generated issue noise.
 	DefaultIssueExclude = "-author:app/renovate -label:renovate -label:auto-generated"
-	// DefaultCodeScanningExcludeForks skips the code-scanning signal on every
-	// fork. It defaults to true because GitHub reports the alerts of the code a
-	// fork INHERITED as the fork's own, so the findings are upstream's work and
-	// not the owner's: one fork of a large project measured 500 open alerts
-	// against 6 across every first-party repo, drowning the signal it is meant
-	// to raise. Set CODE_SCANNING_EXCLUDE_FORKS=false to read forks too, for an
-	// owner whose forks carry enough of their own code to be worth scanning.
+	// DefaultCodeScanningExcludeForks excludes inherited upstream alerts.
 	DefaultCodeScanningExcludeForks = true
-	// maxScanInterval guards against nonsense configuration (a year between
-	// scans defeats the purpose).
+	// maxScanInterval prevents a cadence too slow to be actionable.
 	maxScanInterval = 365 * 24 * time.Hour
-	// minScanInterval floors a too-frequent interval: a sub-minute scan of a
-	// multi-repo account exhausts GitHub's 5000 req/hour budget and thrashes.
-	minScanInterval = 1 * time.Minute
-	// maxLookbackHours caps the lookback window. 30 days is already far
-	// past "actionable"; beyond it the dedup set and API cost grow without
-	// surfacing anything a human would still act on.
+	// minScanInterval prevents quota exhaustion.
+	minScanInterval = time.Minute
+	// maxLookbackHours prevents unbounded API and deduplication cost.
 	maxLookbackHours = 24 * 30
 )
 
-// Config is the effective runtime configuration after env var parsing.
+// Config is the effective runtime configuration.
 type Config struct {
-	// ExcludeRepos is a set of repo names (not full names) to skip across
-	// all signals. Used to silence repos that legitimately fail or that the
-	// owner does not want surfaced. Keyed by bare name for O(1) lookup.
+	// ExcludeRepos contains bare names excluded from every signal.
 	ExcludeRepos map[string]bool
-	// CodeScanningExcludeRepos is a set of repo names (not full names) to skip
-	// for the code-scanning signal ONLY, while still scanning them for runs,
-	// PRs, and issues. Use it for repos whose code-scanning API always fails
-	// expectedly — a private repo on a plan without GitHub Advanced Security
-	// 403s every scan — so that expected failure stops marking every scan
-	// degraded, without dropping the repo's other signals (which EXCLUDE_REPOS
-	// would). Keyed by bare name for O(1) lookup.
+	// CodeScanningExcludeRepos excludes only code-scanning reads.
 	CodeScanningExcludeRepos map[string]bool
-	// Token is the GitHub PAT used for API auth. Never logged.
-	Token string
-	// Owner is the GitHub login (user or org) whose repos are scanned.
-	Owner string
-	// PRExclude is appended to the open-PR search query to filter bot noise.
-	PRExclude string
-	// IssueExclude is appended to the open-issue search query to filter
-	// bot / auto-generated noise.
-	IssueExclude string
-	// ScanInterval is the gap between scans; always positive (invalid input,
-	// including the fleet's external-scheduling sentinels this app does not
-	// support, falls back to DefaultScanInterval). Parsed from SCAN_INTERVAL.
+	Token                    string
+	Owner                    string
+	PRExclude                string
+	IssueExclude             string
+	// ScanInterval is always positive for the health-probe deadline.
 	ScanInterval time.Duration
-	// Lookback is how far back each scan considers runs.
-	Lookback time.Duration
-	// LogLevel is parsed from LOG_LEVEL.
-	LogLevel slog.Level
-	// CodeScanningExcludeForks skips the code-scanning signal on every fork,
-	// whatever CodeScanningExcludeRepos lists. It is the batch form of that
-	// list for the one repo property that always warrants the skip, so a NEW
-	// fork is covered the moment it is created rather than when someone
-	// remembers to add its name. Parsed from CODE_SCANNING_EXCLUDE_FORKS
-	// (default true); the skip is identical to the per-name one, so a fork
-	// keeps its runs, PR and issue signals and never marks a scan degraded.
+	Lookback     time.Duration
+	LogLevel     slog.Level
+	// CodeScanningExcludeForks excludes inherited alerts without skipping other signals.
 	CodeScanningExcludeForks bool
 }
 
-// Load reads configuration from the environment with sensible defaults.
+// Load reads configuration from the environment.
 func Load() Config {
 	rawLogLevel := os.Getenv("LOG_LEVEL")
 	lvl, ok := slogx.ParseLevel(rawLogLevel, slog.LevelInfo)
@@ -130,25 +76,12 @@ func Load() Config {
 	}
 }
 
-// ScanInterval returns the effective SCAN_INTERVAL, parsed and clamped with
-// the same rules Load applies; it is always positive, so the health probe's
-// freshness deadline is always armed. Exported separately so the health
-// subcommand can derive its probe max-age from the same source of truth
-// without a full config load.
+// ScanInterval returns the positive effective SCAN_INTERVAL.
 func ScanInterval() time.Duration {
 	return parseScanInterval(os.Getenv("SCAN_INTERVAL"))
 }
 
-// parseScanInterval parses SCAN_INTERVAL into the gap between scans. It
-// delegates to scheduler.ParseInterval (with WithBounds clamping a built-in
-// cadence to [minScanInterval, maxScanInterval]): a Go duration (e.g. "15m",
-// "1h30m") runs built-in; an unset value uses the default; and an invalid or
-// negative value warns and falls back to the default so a typo degrades to
-// "still scanning" rather than silence. The fleet's external-scheduling
-// sentinels (off / disabled / 0) get that same invalid-input treatment:
-// this app has no external mode (stdout is the product; scans never run
-// outside the daemon), so a sentinel is just another value that doesn't
-// parse to a usable cadence.
+// parseScanInterval falls back to the default for invalid or external modes.
 func parseScanInterval(raw string) time.Duration {
 	s := scheduler.ParseInterval(raw, DefaultScanInterval,
 		scheduler.WithBounds(minScanInterval, maxScanInterval),
@@ -161,21 +94,12 @@ func parseScanInterval(raw string) time.Duration {
 	return s.Interval
 }
 
-// Valid reports whether the config has the minimum needed to run: an owner
-// to scan and a token to authenticate. Unauthenticated GitHub API access is
-// rate-limited to 60 req/hour, far too low for a multi-repo scan, so a missing
-// token is fatal misconfiguration rather than a degraded mode. Pointer
-// receiver: Config is large enough that copying it per call is wasteful.
+// Valid reports whether the owner and authenticated API access are configured.
 func (c *Config) Valid() bool {
 	return c.Owner != "" && c.Token != "" && urlsafe.IsSafeURLSegment(c.Owner)
 }
 
-// parseExcludes parses a comma-separated list of bare repo names to skip.
-// Entries are trimmed and lowercased; empties are dropped. Matching is
-// case-insensitive — the collect-side lookup keys are lowercased to match —
-// mirroring keep()'s case-insensitive owner test (GitHub repo names are
-// themselves case-insensitive). Unsafe names are kept (they are only ever
-// compared, never used to build a URL) but trimmed.
+// parseExcludes lowercases bare names for case-insensitive comparison only.
 func parseExcludes(s string) map[string]bool {
 	out := make(map[string]bool)
 	for p := range strings.SplitSeq(s, ",") {
@@ -186,23 +110,7 @@ func parseExcludes(s string) map[string]bool {
 	return out
 }
 
-// clampedInt reads an integer env var and clamps it into [lo, hi]. A
-// non-numeric or negative value is treated as "unset" and falls back to def.
-// A non-negative value below lo is floored to lo; a value above hi is capped
-// to hi (and logged). Used for LOOKBACK_HOURS (def=72, lo=1, hi=720).
-//
-// The negative-vs-zero split is deliberate: LOOKBACK_HOURS=0 is read as "the
-// smallest useful window" (floor to lo=1), whereas a negative value is
-// nonsense input that should restore the default.
-//
-// The clamp itself uses the min/max builtins rather than `if v < lo` / `if v
-// > hi` comparisons. A comparison-based clamp has an unkillable
-// CONDITIONALS_BOUNDARY mutant at each bound (at v==lo, both `v < lo` and `v
-// <= lo` yield lo; likewise at v==hi) — the classic equivalent mutant.
-// Expressing the clamp as max(lo, min(v, hi)) removes those operators
-// entirely. The one remaining comparison (clamped != v, gating the
-// over-max warning) is exercised by TestClampedIntWarnsOverMax, which
-// captures the slog output — so its boundary mutant is killable too.
+// clampedInt treats negative input as unset and floors zero to lo.
 func clampedInt(key envx.Key, def, lo, hi int) int {
 	v, ok, err := envx.IntStrict(key)
 	if err != nil || !ok || v < 0 {

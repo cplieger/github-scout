@@ -57,14 +57,12 @@ func TestIsSafeURLSegment(t *testing.T) {
 	}
 }
 
-// FuzzIsSafeURLSegment asserts the safety contract through a code path
-// independent of the predicate's implementation: any segment the predicate
-// accepts must be non-empty, must not be a traversal element, must contain
-// none of the URL-structure-breaking characters, and must be
-// percent-decode-inert (url.PathUnescape returns it unchanged). The
-// decode-inert invariant runs through a different code path than the
-// allowlist, killing mutants that would weaken it to admit a percent-encoded
-// byte.
+// FuzzIsSafeURLSegment asserts the safety contract through a path independent
+// of the predicate's implementation: any accepted segment must be non-empty,
+// not a traversal element, free of URL-structure-breaking characters, and
+// percent-decode-inert (url.PathUnescape returns it unchanged) — the
+// decode-inert check runs through a different path than the allowlist,
+// killing mutants that would admit a percent-encoded byte.
 func FuzzIsSafeURLSegment(f *testing.F) {
 	for _, seed := range []string{
 		"cplieger", "github-scout", "v1.2.3", "repo_name",
@@ -74,7 +72,7 @@ func FuzzIsSafeURLSegment(f *testing.F) {
 	}
 	f.Fuzz(func(t *testing.T, s string) {
 		if !IsSafeURLSegment(s) {
-			return // rejected inputs carry no obligations
+			return // rejected: no obligations
 		}
 		if s == "" || s == "." || s == ".." {
 			t.Errorf("accepted %q, but it is empty or a traversal element", s)

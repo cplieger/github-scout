@@ -18,7 +18,6 @@ import (
 	"github.com/cplieger/slogx/capture"
 )
 
-// fakeClient is a scripted apiClient for driving the collector without HTTP.
 type fakeClient struct {
 	reposErr  error
 	prsErr    error

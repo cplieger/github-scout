@@ -112,13 +112,9 @@ func TestRunScheduled_firstScanRunsImmediatelyAndSetsMarker(t *testing.T) {
 }
 
 // TestRunScheduled_failingScanStillRefreshesLiveness pins the marker's
-// loop-liveness semantics: a FAILING scan (here: a panicking collector,
-// recovered by runScan) still refreshes the marker, because the marker
-// asserts "the loop completed an iteration", not "the data is healthy".
-// A bad token or rate limit must not flap container health — the loop
-// retries next tick, and the failure is reported on the log channel.
-// Only a wedged loop (no refresh at all) goes stale past the probe's
-// max-age. Guards the unconditional marker.Set(true) in runScheduled.
+// loop-liveness semantics: a failing scan (panicking collector, recovered
+// by runScan) still refreshes the marker — it asserts loop progress, not
+// data health. Guards the unconditional marker.Set(true) in runScheduled.
 func TestRunScheduled_failingScanStillRefreshesLiveness(t *testing.T) {
 	marker := health.NewMarker(filepath.Join(t.TempDir(), ".healthy"))
 	marker.Set(false)

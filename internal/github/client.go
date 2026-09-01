@@ -1,15 +1,4 @@
-// Package github is github-scout's GitHub REST API client. It exposes
-// exactly the reads the scout needs — discover an owner's repos, list a
-// repo's completed workflow runs, search open PRs and issues across all of
-// them, and list a repo's code-scanning alerts — over the cplieger/httpx
-// retry transport. Public repos and (with a token that can see them)
-// private repos are both covered, which is the whole reason this exists:
-// the Grafana GitHub-datasource plugin cannot enumerate "all workflows
-// across all repos", and private repos have no org-level alert endpoint.
-//
-// Attribution: the auth-header set and the page-count pagination approach
-// follow patterns common to the MIT-licensed community GitHub exporters
-// (githubexporter/github-exporter, xrstf/github_exporter). See NOTICE.
+// Package github implements the GitHub REST client.
 package github
 
 import (
@@ -176,16 +165,7 @@ type apiRun struct {
 	RunNumber  int64              `json:"run_number"`
 }
 
-// ListRuns returns all completed workflow runs for repo created at or after
-// since, in a single paginated query. status=completed catches every
-// conclusion (success, failure, timed_out, cancelled, …) in one request,
-// so the former per-conclusion fan-out is gone: the collector emits each
-// run once and classifies failures via ghsignal.IsFailureConclusion, and the
-// dashboard derives both the failures view and the failure rate from the
-// one all-runs stream. The Actions API returns runs newest-first, so a repo
-// that exceeds maxPages*perPage completed runs inside the lookback window
-// has its oldest runs truncated — acceptable, since that volume is itself a
-// signal worth investigating directly.
+// ListRuns returns completed runs since the cutoff; pagination bounds a scan.
 func (c *Client) ListRuns(ctx context.Context, repo ghsignal.Repo, since time.Time) ([]ghsignal.WorkflowRun, error) {
 	if !urlsafe.IsSafeURLSegment(repo.Owner) || !urlsafe.IsSafeURLSegment(repo.Name) {
 		return nil, fmt.Errorf("unsafe repo segment: %q", repo.FullName())
@@ -260,15 +240,7 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 	return nil
 }
 
-// getJSONConditional is getJSON over a conditional GET (httpx.DoConditional)
-// backed by the client's per-URL cache: an unchanged resource revalidates as
-// a 304 — which GitHub serves without charging the primary rate limit — and
-// out is filled from the cached item subset; a 200 fills out from the body
-// and refreshes the cache. Used by the endpoints whose URLs are stable
-// across scans (the repo listing and per-repo code-scanning alerts) so
-// their ETags actually match; the runs query stays on getJSON — its
-// `created>=` window moves every scan, so its URL (and thus validator) can
-// never stabilize.
+// getJSONConditional serves a cached representation on 304 and retries one cacheless 304 unconditionally.
 func (c *Client) getJSONConditional(ctx context.Context, reqURL string, out any) error {
 	res, err := c.conditionalGet(ctx, reqURL, c.cache.validators(reqURL))
 	if err != nil {
@@ -337,28 +309,7 @@ func (transientStatusError) IsTransient() bool { return true }
 // (codeScanningNotFound, mapStatusError).
 func (e transientStatusError) Unwrap() error { return e.error }
 
-// mapStatusError translates the SYSTEMIC transport failures the two request
-// paths can return into the domain sentinels the collector escalates on, so
-// internal/collect classifies on meaning and never imports httpx. A 401
-// (rejected token) and a 429 (rate limit) are org-wide — they poison every
-// call this scan — so they become ghsignal.ErrTokenInvalid / ghsignal.ErrRateLimited
-// (the original status error is preserved in the chain for logging). Every
-// other failure passes through unchanged: a 403 (per-repo: Advanced Security
-// off or a missing scope), a 5xx, or a decode error is a plain per-signal
-// failure, and a 404 is left for ListCodeScanningAlerts to map to
-// ErrNoCodeScanning. This is the same boundary mapping as codeScanningNotFound,
-// kept in one place so the github client is the single authority on
-// status→meaning.
-//
-// Two wire families arrive here: GetBytes returns *httpx.StatusError (with
-// the code), while DoConditional classifies through httpx.CheckHTTPStatus —
-// *httpx.RateLimitError for a 429, and *httpx.AuthError for BOTH 401 and
-// 403. The AuthError message embeds the status ("invalid API key (401)" /
-// "access denied (403)"), and only the 401 may escalate to ErrTokenInvalid:
-// a 403 is per-repo (GHAS off) and escalating it would page on every
-// private repo without Advanced Security. An AuthError whose message
-// matches neither stays generic — failing toward degraded-not-escalated,
-// the app's safe direction.
+// mapStatusError maps only 401 and 429 to systemic domain errors; 403 remains per-repo.
 func mapStatusError(err error) error {
 	if se, ok := errors.AsType[*httpx.StatusError](err); ok {
 		switch se.Code {
@@ -520,19 +471,7 @@ type apiCodeAlert struct {
 	Number int64 `json:"number"`
 }
 
-// ListCodeScanningAlerts returns open code-scanning alerts for repo. A repo
-// that never ran code scanning returns 404 (no analyses); that is a benign
-// "no data" outcome rather than a read failure, so it is surfaced as
-// ghsignal.ErrNoCodeScanning (the collector treats such a repo as neither
-// readable nor blind). A 403 is surfaced as a generic error: it can mean
-// GitHub Advanced Security is disabled (expected on a private repo without a
-// GHAS license) OR a missing token scope OR a rate-limit, and silently
-// reporting zero alerts would hide a security signal. The collector treats a
-// per-repo 403 as a degraded read and escalates only when code scanning is
-// blind for EVERY repo that has it; silence an expected, persistent 403 (a
-// private repo without GHAS) via CODE_SCANNING_EXCLUDE_REPOS, which skips
-// only that repo's code-scanning read (EXCLUDE_REPOS would drop the repo
-// from every signal).
+// ListCodeScanningAlerts maps a first-page 404 to no data; a 403 remains unreadable security data.
 func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo ghsignal.Repo) ([]ghsignal.CodeScanningAlert, error) {
 	if !urlsafe.IsSafeURLSegment(repo.Owner) || !urlsafe.IsSafeURLSegment(repo.Name) {
 		return nil, fmt.Errorf("unsafe repo segment: %q", repo.FullName())
@@ -577,16 +516,7 @@ func (c *Client) ListCodeScanningAlerts(ctx context.Context, repo ghsignal.Repo)
 	return alerts, nil
 }
 
-// codeScanningNotFound reports whether err is a 404 — the status GitHub
-// returns when a repository has no code-scanning analyses (the feature was
-// never configured, or no CodeQL run has completed). That is genuinely "no
-// alerts", so the collector skips it silently. A 403 is deliberately NOT
-// treated here: it conflates GitHub Advanced Security being disabled
-// (common on private repos) with a missing token scope or a rate-limit, and
-// silently reporting zero alerts on the latter two would be a false-negative
-// on a security signal — so a 403 is surfaced as an error instead. Both
-// wire families are covered: GetBytes's *StatusError and the conditional
-// door's *HTTPStatusError (CheckHTTPStatus leaves a 404 in the latter).
+// codeScanningNotFound accepts 404 from both HTTP client paths; a 403 remains unreadable security data.
 func codeScanningNotFound(err error) bool {
 	if se, ok := errors.AsType[*httpx.StatusError](err); ok {
 		return se.Code == http.StatusNotFound

@@ -8,39 +8,7 @@ import (
 	"github.com/cplieger/github-scout/internal/ghsignal"
 )
 
-// scanIntegrity accumulates per-signal collection outcomes during one scan and
-// renders the data-integrity verdict. Its job is to keep a reported "0" from a
-// signal that could NOT be read distinct from a confirmed-empty "0" — for code
-// scanning, the difference between "no open alerts" and a silent security
-// false-negative.
-//
-// Two tiers:
-//
-//   - degraded (WARN-level concern): any signal read failed this scan. Surfaced
-//     as the degraded / errors / failed_signals fields on `scan complete`, so
-//     the dashboard's Scan Integrity tile reddens. A single incidental per-repo
-//     failure — a transient 5xx, or a private repo without GitHub Advanced
-//     Security returning 403 — lands here and is tolerated, not paged.
-//   - escalated (`scan degraded`, ERROR-level): a SYSTEMIC failure — a token
-//     rejected on EVERY read this scan (a pervasive 401, see tokenInvalid) or a
-//     rate limit (429), which poison the whole scan — OR discovery returned
-//     zero repos (a valid token that can see nothing, so nothing was scanned)
-//     — OR a signal blind across the board (every repo that has it failed, or a
-//     single-call search failed). This is what an alert fires on.
-//
-// A SPARSE 401 — one rejected among reads that otherwise succeeded — is NOT
-// systemic: GitHub returns intermittent 401s under a secondary-rate-limit burst
-// even on a valid token (and discovery, on the same token, already succeeded to
-// reach here). Such a 401 reddens the integrity tile via failed_signals but
-// does NOT page as a dead credential. It still escalates if it happens to blind
-// an entire signal — via the runsBlind / codeScanningBlind / signal_blind paths
-// (cause named by signal), not as token_invalid.
-//
-// A repo with no code scanning (ghsignal.ErrNoCodeScanning, GitHub's 404) counts
-// as neither readable nor failed, so it never dilutes the "code scanning blind
-// for every repo" test: a genuine missing-scope failure (403 on every repo that
-// DOES have code scanning) still escalates even when other repos simply lack
-// the feature.
+// scanIntegrity keeps unread signals distinct from confirmed-empty signals.
 type scanIntegrity struct {
 	runsOK        int
 	runsFailed    int
@@ -65,15 +33,7 @@ const (
 	outcomeFailed                  // read failed
 )
 
-// classify maps a collection error to an outcome and, for a real failure,
-// records whether it is a systemic (org-wide) credential or rate-limit
-// problem. The github client (the adapter) has already translated the
-// org-wide HTTP statuses into domain sentinels — 401 to ghsignal.ErrTokenInvalid,
-// 429 to ghsignal.ErrRateLimited — so this classifies on meaning and never sees an
-// HTTP transport type. A 403 is deliberately NOT systemic: the client leaves it
-// as a plain error, so on code scanning (where it usually means one private
-// repo lacks GitHub Advanced Security) it is a per-repo failure that escalates
-// only via the "blind for every repo" path.
+// classify records systemic status candidates without importing transport types.
 func (sc *scanIntegrity) classify(err error) outcome {
 	switch {
 	case err == nil:
@@ -191,14 +151,7 @@ func (sc *scanIntegrity) anyReadSucceeded() bool {
 	return sc.runsOK > 0 || sc.csOK > 0 || sc.prsOK || sc.issuesOK
 }
 
-// tokenInvalid reports a PERVASIVE 401: a read returned 401 AND nothing was read
-// this scan. Gating on "nothing read" (rather than firing on any single 401) is
-// the fix for transient-401 false alarms — GitHub returns intermittent 401s
-// under a secondary-rate-limit burst even on a valid token, and discovery, which
-// runs first on the same token, already succeeded to reach the per-signal reads.
-// A sparse 401 among successful reads is left to the per-signal blind paths
-// (which still escalate a fully-dark signal, by signal), while a truly dead
-// token 401s discovery itself, handled in Scan (which flips health).
+// tokenInvalid requires a rejected token and no successful signal read.
 func (sc *scanIntegrity) tokenInvalid() bool {
 	return sc.tokenRejected && !sc.anyReadSucceeded()
 }

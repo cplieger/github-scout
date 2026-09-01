@@ -18,10 +18,6 @@ import (
 	"github.com/cplieger/slogx/capture"
 )
 
-// condServer is an httptest server that serves body with an ETag and answers
-// a matching If-None-Match with 304, counting full responses vs
-// revalidations. The handler asserts the auth headers ride the conditional
-// path exactly as the unconditional one.
 type condServer struct {
 	srv      *httptest.Server
 	lastINM  atomic.Pointer[string]

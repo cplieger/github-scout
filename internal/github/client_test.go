@@ -35,7 +35,6 @@ func newTestClientWithLogger(t *testing.T, srv *httptest.Server, logger *slog.Lo
 
 func TestListReposFiltersOwnerAndArchived(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Auth + version headers must be present on every call.
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
 			t.Errorf("Authorization = %q, want Bearer test-token", got)
 		}
@@ -71,12 +70,9 @@ func TestListReposFiltersOwnerAndArchived(t *testing.T) {
 	}
 }
 
-// TestListReposCarriesForkFlag pins that the fork bit reaches the domain type.
-// The code-scanning skip is driven entirely by ghsignal.Repo.Fork, so a decode
-// that silently dropped the field would leave every fork readable with the
-// exclude flag on and no test elsewhere would notice: the collector tests build
-// their repos by hand. A fork must NOT be filtered out of discovery — it keeps
-// its runs, PR and issue signals — so the count stays 2 here.
+// TestListReposCarriesForkFlag pins that the fork bit reaches the domain type
+// (the code-scanning skip depends on it) and that a fork is discovered, not
+// filtered out — it still keeps its runs, PR and issue signals.
 func TestListReposCarriesForkFlag(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -107,7 +103,6 @@ func TestListReposCarriesForkFlag(t *testing.T) {
 }
 
 func TestListReposPaginates(t *testing.T) {
-	// Page 1 returns a full page (100) → client must fetch page 2.
 	var full strings.Builder
 	full.WriteByte('[')
 	for i := range perPage {
@@ -146,16 +141,12 @@ func TestListReposPaginates(t *testing.T) {
 }
 
 func TestListRunsAllConclusions(t *testing.T) {
-	// One status=completed query returns runs of every conclusion; the
-	// client maps them all (no per-conclusion fan-out) and preserves each
-	// conclusion for the dashboard to filter and aggregate.
 	var queries int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		queries++
 		if got := r.URL.Query().Get("status"); got != "completed" {
 			t.Errorf("status = %q, want completed", got)
 		}
-		// The created filter must carry the >= operator (URL-decoded here).
 		if c := r.URL.Query().Get("created"); !strings.HasPrefix(c, ">=") {
 			t.Errorf("created filter = %q, want >= prefix", c)
 		}
@@ -194,7 +185,6 @@ func TestListRunsAllConclusions(t *testing.T) {
 }
 
 func TestListRunsPaginates(t *testing.T) {
-	// A full first page (perPage runs) forces a second page fetch.
 	var full strings.Builder
 	full.WriteString(`{"workflow_runs":[`)
 	for i := range perPage {
@@ -244,8 +234,7 @@ func TestUnsafeSegmentsRejected(t *testing.T) {
 	}
 }
 
-// itoa is a tiny stdlib-free int formatter for building the pagination
-// fixture (avoids pulling strconv into the builder loop).
+// itoa is a tiny stdlib-free int formatter for the pagination fixture.
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
@@ -341,11 +330,10 @@ func TestListCodeScanningAlerts(t *testing.T) {
 	}
 }
 
+// TestCodeScanning404IsNoCodeScanning: a 404 (no code scanning ever run) must
+// map to the benign ghsignal.ErrNoCodeScanning sentinel, not a read failure,
+// so the collector excludes it from the "blind" calculation.
 func TestCodeScanning404IsNoCodeScanning(t *testing.T) {
-	// A repo that never ran code scanning returns 404 — the client maps it to
-	// the benign ghsignal.ErrNoCodeScanning sentinel (NOT a read failure, and NOT
-	// a silent clean read), so the collector can exclude it from the "blind"
-	// calculation. It still yields no alerts.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "no analysis found", http.StatusNotFound)
 	}))
@@ -360,11 +348,10 @@ func TestCodeScanning404IsNoCodeScanning(t *testing.T) {
 	}
 }
 
+// TestCodeScanning403IsError: a 403 (Advanced Security off, missing scope, or
+// rate limit) must surface as an error, never the benign no-code-scanning
+// sentinel or a silent "zero alerts" (a security false-negative).
 func TestCodeScanning403IsError(t *testing.T) {
-	// A 403 is ambiguous — Advanced Security disabled, a missing token
-	// scope, or a rate limit. It MUST surface as an error rather than be
-	// silently mapped to "zero alerts", which would hide a security signal,
-	// and it must NOT be the benign no-code-scanning sentinel.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "Resource not accessible by personal access token", http.StatusForbidden)
 	}))
@@ -377,22 +364,16 @@ func TestCodeScanning403IsError(t *testing.T) {
 	if errors.Is(err, ghsignal.ErrNoCodeScanning) {
 		t.Errorf("403 must NOT be mapped to the benign no-code-scanning sentinel")
 	}
-	// A 403 is per-repo (one private repo without GHAS, a missing scope), not
-	// an org-wide class, so it must map to NEITHER systemic sentinel; the
-	// collector then treats it as a plain per-repo failure that escalates only
-	// when code scanning is blind for every repo that has it.
+	// Per-repo, not org-wide: must map to neither systemic sentinel.
 	if errors.Is(err, ghsignal.ErrTokenInvalid) || errors.Is(err, ghsignal.ErrRateLimited) {
 		t.Errorf("403 must not map to a systemic sentinel, got: %v", err)
 	}
 }
 
 // TestStatus401MapsTokenInvalid and TestStatus429MapsRateLimited pin the
-// systemic status→sentinel mapping the collector's escalation depends on. They
-// are the boundary half of the contract: the github client is the single place
-// that turns an HTTP status into meaning, so internal/collect can classify on
-// ghsignal sentinels without importing the HTTP transport. A regression that
-// stopped mapping 401/429 would silently downgrade an org-wide credential or
-// rate-limit failure to a per-repo blip and fail to page.
+// status→sentinel mapping the collector's escalation depends on: the client
+// is the one place that turns an HTTP status into a ghsignal sentinel, so
+// internal/collect never imports the HTTP transport to classify a failure.
 func TestStatus401MapsTokenInvalid(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "Bad credentials", http.StatusUnauthorized)
@@ -414,8 +395,7 @@ func TestStatus429MapsRateLimited(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// One attempt only: a 429 is retryable, and the test only needs to observe
-	// the post-exhaustion mapping, not sit through backoff.
+	// One attempt: observe the post-exhaustion mapping without sitting through backoff.
 	c := NewClient(Options{HTTP: httpx.NewClient(5 * time.Second), Token: "test-token", RetryOpts: []httpx.Option{httpx.WithMaxAttempts(1)}, Logger: slog.Default()})
 	c.baseURL = srv.URL
 
@@ -441,8 +421,8 @@ func TestRepoFromAPIURL(t *testing.T) {
 	}
 }
 
+// TestNewClientNilLoggerDefaults: a nil logger must fall back to slog.Default.
 func TestNewClientNilLoggerDefaults(t *testing.T) {
-	// A nil logger must fall back to slog.Default, never be left nil.
 	c := NewClient(Options{HTTP: httpx.NewClient(time.Second), Token: "tok"})
 	if c.logger == nil {
 		t.Errorf("NewClient with nil logger left c.logger nil; want slog.Default fallback")
@@ -450,7 +430,7 @@ func TestNewClientNilLoggerDefaults(t *testing.T) {
 }
 
 // jsonList renders n comma-joined JSON objects from itemFmt (a single %d
-// placeholder gets a per-item id), for building full-page pagination fixtures.
+// placeholder gets a per-item id).
 func jsonList(itemFmt string, n, base int) string {
 	var b strings.Builder
 	for i := range n {
@@ -463,10 +443,8 @@ func jsonList(itemFmt string, n, base int) string {
 }
 
 // capPageHandler serves a full page (perPage items) for page numbers 1..maxPages
-// and a short page otherwise. A correct client fetches exactly maxPages pages;
-// a loop-bound mutation (page--, page<maxPages, or len<=perPage break) diverges
-// in the request count, and the out-of-range short page keeps a page-- mutant
-// from looping forever. wrap formats the envelope around the item list.
+// and a short page otherwise, so a client must fetch exactly maxPages pages and
+// cannot loop forever past the cap. wrap formats the envelope around the item list.
 func capPageHandler(requests *int, wrap func(items string) string, itemFmt string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		*requests++
@@ -498,9 +476,7 @@ func TestListReposStopsAtMaxPages(t *testing.T) {
 	if len(repos) != maxPages*perPage {
 		t.Errorf("got %d repos, want %d", len(repos), maxPages*perPage)
 	}
-	// The warning is the only signal an operator gets that the scan universe
-	// was capped, so it must name the ceiling actually scanned: 5 pages of
-	// 100 repos.
+	// The only operator signal that the scan universe was capped; must name the ceiling.
 	const warning = "repo listing hit pagination bound; scan universe may be truncated"
 	if got := rec.CountExact(warning); got != 1 {
 		t.Errorf("ListRepos over the page cap emitted %d truncation warnings, want 1", got)
@@ -548,8 +524,7 @@ func TestSearchStopsAtMaxPages(t *testing.T) {
 	if len(prs) != maxPages*perPage {
 		t.Errorf("got %d PRs, want %d", len(prs), maxPages*perPage)
 	}
-	// A partial snapshot is only distinguishable from a complete one by this
-	// warning, so it must name the ceiling actually searched: 5 pages of 100.
+	// Only signal distinguishing a partial snapshot from a complete one; must name the ceiling.
 	const warning = "search hit pagination bound; snapshot may be truncated"
 	if got := rec.CountExact(warning); got != 1 {
 		t.Errorf("search over the page cap emitted %d truncation warnings, want 1", got)
@@ -579,11 +554,9 @@ func TestListCodeScanningAlertsStopsAtMaxPages(t *testing.T) {
 	}
 }
 
-// TestCodeScanningNotFound pins the 404-vs-everything-else classifier that
-// decides whether a code-scanning read error is the benign no-analyses 404 or
-// a real failure. The security contract hinges on the non-StatusError branch:
-// a couldn't-check (a transient or decode error) must never be read as a
-// confirmed-clean, so only a 404 StatusError maps to true.
+// TestCodeScanningNotFound pins the 404-vs-everything-else classifier: a
+// couldn't-check (transient or decode error) must never read as confirmed-clean,
+// so only a 404 StatusError maps to true.
 func TestCodeScanningNotFound(t *testing.T) {
 	tests := []struct {
 		err  error
@@ -605,11 +578,9 @@ func TestCodeScanningNotFound(t *testing.T) {
 	}
 }
 
-// TestUnsafeSegmentsRejectedSearchAndCodeScanning extends the urlsafe guard
-// coverage to the three methods TestUnsafeSegmentsRejected does not exercise:
-// SearchOpenPRs / SearchOpenIssues (via search) and ListCodeScanningAlerts. A
-// traversal/injection segment (../evil) must be rejected before URL
-// construction in each.
+// TestUnsafeSegmentsRejectedSearchAndCodeScanning: a traversal/injection
+// segment (../evil) must be rejected before URL construction in
+// SearchOpenPRs, SearchOpenIssues, and ListCodeScanningAlerts.
 func TestUnsafeSegmentsRejectedSearchAndCodeScanning(t *testing.T) {
 	c := NewClient(Options{HTTP: httpx.NewClient(time.Second), Token: "tok", Logger: slog.Default()})
 
@@ -625,12 +596,9 @@ func TestUnsafeSegmentsRejectedSearchAndCodeScanning(t *testing.T) {
 	}
 }
 
-// TestSearchIncompleteResultsErrors pins the data-integrity contract on the
-// Search API's incomplete_results flag: GitHub sets it when a search times out
-// server-side, so the returned set is partial and must NOT be read as a
-// confirmed-empty/complete result. search() returns an error in that case and
-// SearchOpenPRs propagates it (nil, err), so the collector folds the failed
-// search into its degraded/signal_blind verdict rather than reporting a false 0.
+// TestSearchIncompleteResultsErrors: GitHub's incomplete_results flag means
+// the search timed out server-side, so the set is partial and must error
+// rather than read as a confirmed-empty/complete result.
 func TestSearchIncompleteResultsErrors(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -652,13 +620,10 @@ func TestSearchIncompleteResultsErrors(t *testing.T) {
 	}
 }
 
-// TestCodeScanning404MidPaginationIsRealError pins the len(alerts)==0 guard in
-// ListCodeScanningAlerts: a 404 is mapped to the benign ghsignal.ErrNoCodeScanning
-// ONLY before any alert is collected. A 404 on page 2+ (after page 1 returned a
-// full page) is a real read failure and must surface as a wrapped error, never
-// be swallowed as "no code scanning" (which would drop the alerts already read
-// and report a false clean). Statement coverage is green on the line via the
-// first-page-404 test, but the len(alerts)!=0 path is otherwise unexercised.
+// TestCodeScanning404MidPaginationIsRealError: a 404 is the benign
+// ghsignal.ErrNoCodeScanning ONLY before any alert is collected. A 404 on
+// page 2+ is a real read failure and must surface as an error, never be
+// swallowed (which would drop the alerts already read and report a false clean).
 func TestCodeScanning404MidPaginationIsRealError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -679,11 +644,9 @@ func TestCodeScanning404MidPaginationIsRealError(t *testing.T) {
 	}
 }
 
-// TestGetJSONSurfacesDecodeError pins the untrusted-input decode chokepoint:
-// getJSON is the single point through which all five API reads decode bytes
-// from GitHub, so a malformed body must surface as a "decode response" error
-// rather than be swallowed into a zero-value struct and read as a
-// confirmed-empty result.
+// TestGetJSONSurfacesDecodeError: getJSON is the single point where all five
+// API reads decode bytes from GitHub, so a malformed body must surface as a
+// "decode response" error, never a zero-value confirmed-empty result.
 func TestGetJSONSurfacesDecodeError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -703,11 +666,9 @@ func TestGetJSONSurfacesDecodeError(t *testing.T) {
 	}
 }
 
-// TestListRunsReturnsPartialOnMidPaginationError pins ListRuns's partial-return
-// contract: on a getJSON failure mid-pagination it returns the runs collected
-// from earlier pages ALONGSIDE the error (return runs, err -- not nil, err),
-// unlike the other readers. The collector relies on this: collectRuns emits the
-// partial set while still folding the error into its degraded verdict.
+// TestListRunsReturnsPartialOnMidPaginationError: on a getJSON failure
+// mid-pagination, ListRuns returns the runs collected so far ALONGSIDE the
+// error (runs, err — not nil, err), unlike the other readers.
 func TestListRunsReturnsPartialOnMidPaginationError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -732,17 +693,14 @@ func TestListRunsReturnsPartialOnMidPaginationError(t *testing.T) {
 	}
 }
 
-// TestGetJSON_routes_retry_logs_to_client_logger verifies that getJSON wires
-// the client's logger into httpx via WithLogger: httpx's per-attempt retry
-// diagnostics must land on the injected logger, not the global slog.Default().
-// The server returns one 503 (retried) then 200, so httpx logs one Debug
-// "failed, retrying" line, which must appear in the client logger's buffer.
+// TestGetJSON_routes_retry_logs_to_client_logger: getJSON must wire the
+// client's logger into httpx via WithLogger, not the global slog.Default().
 func TestGetJSON_routes_retry_logs_to_client_logger(t *testing.T) {
 	var calls int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		if calls == 1 {
-			w.WriteHeader(http.StatusServiceUnavailable) // retried by httpx
+			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -763,12 +721,9 @@ func TestGetJSON_routes_retry_logs_to_client_logger(t *testing.T) {
 	}
 }
 
-// TestListCodeScanningAlertsRuleDescriptionFallback pins the cmp.Or fallback in
-// ListCodeScanningAlerts: when an alert's rule.id is empty (some tools populate
-// only rule.description), Rule falls back to the description rather than
-// emitting an empty rule name. Every other code-scanning test sets rule.id, so
-// a mutant dropping the cmp.Or fallback to a bare a.Rule.ID survives; this
-// exercises the empty-id branch.
+// TestListCodeScanningAlertsRuleDescriptionFallback: when rule.id is empty
+// (some tools populate only rule.description), Rule falls back to the
+// description rather than an empty name.
 func TestListCodeScanningAlertsRuleDescriptionFallback(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -790,13 +745,9 @@ func TestListCodeScanningAlertsRuleDescriptionFallback(t *testing.T) {
 	}
 }
 
-// TestListReposOwnerMatchIsCaseInsensitive pins the strings.EqualFold owner
-// match in ListRepos: GitHub's API can return the owner login in a different
-// case than the configured GITHUB_OWNER, so a mixed-case configured owner must
-// still keep a lowercased API login. Every other ListRepos test uses matching
-// lowercase, so a mutant swapping EqualFold for == survives; this exercises the
-// case-mismatch path (mirroring the collector's TestKeepIsCaseInsensitiveOnOwner
-// contract at the client layer).
+// TestListReposOwnerMatchIsCaseInsensitive: GitHub's API can return the owner
+// login in a different case than the configured GITHUB_OWNER, so the match
+// must be case-insensitive (mirrors the collector's TestKeepIsCaseInsensitiveOnOwner).
 func TestListReposOwnerMatchIsCaseInsensitive(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

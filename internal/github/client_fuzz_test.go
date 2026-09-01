@@ -6,13 +6,9 @@ import (
 	"testing"
 )
 
-// These fuzz targets cover the JSON-decode boundaries where github-scout
-// ingests untrusted bytes from the GitHub API (or anything impersonating it
-// via a redirect / MITM). The invariant is robustness, not field validation:
-// json.Unmarshal must either succeed or error — never panic — on arbitrary
-// input, and the downstream pure helpers that consume the decoded structs
-// (repoFromAPIURL) must not panic on whatever was decoded. Numeric fields are
-// display-only (or harmless map keys), so no value-range invariant applies.
+// These targets fuzz the JSON-decode boundaries where github-scout ingests
+// untrusted bytes from the GitHub API. Invariant is robustness (decode must
+// not panic), not field validation; numeric fields are display-only.
 
 // FuzzDecodeRunsPage covers the /actions/runs response decode.
 func FuzzDecodeRunsPage(f *testing.F) {
@@ -27,7 +23,7 @@ func FuzzDecodeRunsPage(f *testing.F) {
 
 	f.Fuzz(func(_ *testing.T, data string) {
 		var page apiRunsPage
-		_ = json.Unmarshal([]byte(data), &page) // must not panic
+		_ = json.Unmarshal([]byte(data), &page)
 	})
 }
 
@@ -69,6 +65,6 @@ func FuzzDecodeCodeAlerts(f *testing.F) {
 
 	f.Fuzz(func(_ *testing.T, data string) {
 		var alerts []apiCodeAlert
-		_ = json.Unmarshal([]byte(data), &alerts) // must not panic
+		_ = json.Unmarshal([]byte(data), &alerts)
 	})
 }
