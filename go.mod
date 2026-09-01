@@ -3,7 +3,7 @@ module github.com/cplieger/github-scout
 go 1.27.1
 
 require (
-	github.com/cplieger/envx/v2 v2.0.2
+	github.com/cplieger/envx/v2 v2.0.3
 	github.com/cplieger/health v1.7.1
 	github.com/cplieger/httpx/v5 v5.0.3
 	github.com/cplieger/runesafe/v2 v2.0.1
