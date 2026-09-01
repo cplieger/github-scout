@@ -1,43 +1,4 @@
-// Package collect is github-scout's scan orchestrator. One Collector
-// instance lives for the process lifetime; each Scan gathers the four
-// actionable GitHub signals across all of an owner's repos and emits them
-// as structured log lines for Alloy to ship to Loki.
-//
-// Two emission models (see internal/ghsignal):
-//
-//   - Event-once (Actions runs): each completed run ID is emitted a single
-//     time as msg="workflow run" with its conclusion, so a plain LogQL
-//     count equals the number of distinct runs and the dashboard filters
-//     that stream for failures and computes the failure rate. The dedup set
-//     is in-memory, pruned to the lookback window.
-//   - Snapshot (open PRs, open issues, code-scanning alerts): the full
-//     current set is emitted every scan. A closed/merged/fixed item simply
-//     stops appearing in later snapshots, so the dashboard reads the most
-//     recent scan as "what is open right now" — no dedup state needed.
-//
-// Code scanning has two skip rules the other signals do not, both leaving the
-// repo's runs / PR / issue signals intact: every FORK is skipped by default
-// (CODE_SCANNING_EXCLUDE_FORKS), because GitHub reports the alerts of the code
-// a fork inherited as the fork's own, and named repos are skipped
-// (CODE_SCANNING_EXCLUDE_REPOS) for a code-scanning API that always fails
-// expectedly. Neither counts as a readable signal nor as a failure, so a
-// skipped repo can neither mark a scan degraded nor mask a real blackout.
-//
-// The only cross-scan state is the run dedup set. Production (main.go) sets
-// Deps.StatePath wherever a scan runs -- the scheduled daemon and every
-// one-shot `trigger` process -- so the set is persisted to a small JSON
-// file (e.g. /tmp/seen-runs.json) at the
-// end of each scan and reloaded at the next process start; a plain restart or
-// a fresh `trigger` then re-emits nothing. Persistence is a flock'd
-// single-slot read-modify-write transaction (scheduler.SlotFile) whose save
-// merges the on-disk set with the in-memory one, so even an out-of-contract
-// concurrent writer pair (a trigger hand-exec'd inside the scheduled
-// container, or two overlapping cron triggers) never loses entries
-// to a last-writer-wins overwrite. Leaving Deps.StatePath empty keeps
-// the set in memory only (used in tests). Either way a cold start — the first
-// run, or a container recreate that clears /tmp — at worst re-emits runs still
-// inside the lookback window (the dashboard dedups run counts by run_id), so
-// persistence is a best-effort optimization, never a correctness dependency.
+// Package collect scans GitHub signals and emits structured log events.
 package collect
 
 import (
@@ -59,16 +20,16 @@ type Collector struct {
 	client       apiClient
 	logger       *slog.Logger
 	now          func() time.Time
-	seen         map[int64]time.Time // run RunID -> CreatedAt, pruned to lookback
-	exclude      map[string]bool     // bare repo names to skip across all signals
-	csExclude    map[string]bool     // bare repo names to skip for code scanning only
-	slot         *scheduler.SlotFile // flock'd dedup-state slot at statePath (nil = in-memory only)
+	seen         map[int64]time.Time
+	exclude      map[string]bool
+	csExclude    map[string]bool
+	slot         *scheduler.SlotFile
 	owner        string
-	prExclude    string // raw search qualifiers to filter PR noise (e.g. Renovate)
-	issueExclude string // raw search qualifiers to filter issue noise (Renovate, auto-generated)
-	statePath    string // optional path to persist `seen` across trigger processes ("" = in-memory only)
+	prExclude    string
+	issueExclude string
+	statePath    string
 	lookback     time.Duration
-	csSkipForks  bool // skip code scanning on every fork, whatever csExclude lists
+	csSkipForks  bool
 }
 
 // apiClient is the consumer-side view of the GitHub client the collector
@@ -144,35 +105,14 @@ func New(d *Deps) *Collector {
 	return c
 }
 
-// Scan runs one full cycle and returns whether it was healthy. Health is a
-// LIVENESS verdict: true when repo discovery succeeded, false only when it
-// failed (bad token, rate limit) — the one condition a restart might clear.
-// Per-signal collection failures deliberately do NOT flip health: a restart
-// cannot fix a missing token scope or a sustained rate limit, so flapping the
-// container would be noise. Instead the scan reports DATA INTEGRITY on its own
-// channel via scanIntegrity. A signal that could not be read makes its reported
-// "0" mean "could not check", not "nothing there" — and for code scanning that
-// is a security false-negative — so "scan complete" carries `errors`,
-// `degraded`, and `failed_signals`, and a SYSTEMIC failure (a rejected token or
-// rate limit, or a signal blind across every repo) is escalated to a distinct
-// ERROR-level "scan degraded" line that the shared error panel and the Loki
-// ruler alert key on.
+// Scan returns false only when discovery fails; unread signals are reported through scanIntegrity.
 func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 	start := c.now()
-	// Round the cutoff down to a whole second: GitHub run timestamps are
-	// second-precision, so a sub-second cutoff could prune a run the
-	// `created>=` server filter still returns. A second-aligned boundary keeps
-	// prune and the query in agreement (see TestPruneBoundaryRetainsRunsAtCutoff).
 	cutoff := start.Add(-c.lookback).Truncate(time.Second)
 
 	repos, err := c.client.ListRepos(ctx, c.owner)
 	if err != nil {
 		if isShutdown(err) {
-			// SIGTERM (or a deadline) landed during discovery: a clean shutdown,
-			// not a token failure. Mirror the per-signal collectors, which treat
-			// cancellation as outcomeShutdown — don't log an ERROR "repo discovery
-			// failed" (which reads like a dead token and bumps the shared error
-			// panel) and don't flip health, since a restart has nothing to fix.
 			c.logger.Debug("scan interrupted", "phase", "repo discovery")
 			return true
 		}
@@ -191,7 +131,7 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 	scanned, skipped, newRuns, newFailures, alerts := 0, 0, 0, 0, 0
 	for i := range repos {
 		if ctx.Err() != nil {
-			break // shutdown (SIGTERM): stop scanning remaining repos cleanly
+			break
 		}
 		repo := &repos[i]
 		if c.excludedName(repo.Name) {
@@ -205,13 +145,6 @@ func (c *Collector) Scan(ctx context.Context) (healthy bool) {
 		newFailures += failures
 		ig.recordRuns(runErr)
 		if c.codeScanningExcluded(repo) {
-			// Code scanning is intentionally skipped for this repo: it is either
-			// named in CODE_SCANNING_EXCLUDE_REPOS (e.g. a private repo without
-			// GitHub Advanced Security, whose API always 403s) or a fork under
-			// CODE_SCANNING_EXCLUDE_FORKS (whose alerts belong to the upstream
-			// project). Treat it like a repo with no code scanning: neither a
-			// readable signal nor a failure, so it never marks the scan degraded
-			// nor dilutes the "blind for every repo" test. Other signals stand.
 			c.logger.Debug("skipping code scanning for excluded repo",
 				"repo", repo.FullName(), "fork", repo.Fork)
 		} else {
@@ -341,8 +274,6 @@ func (c *Collector) collectAlerts(ctx context.Context, repo *ghsignal.Repo) (int
 	if err != nil {
 		switch {
 		case errors.Is(err, ghsignal.ErrNoCodeScanning):
-			// Benign: this repo has no code scanning. Not a failure and not a
-			// readable signal — Scan's integrity verdict ignores it.
 		case isShutdown(err):
 			c.logger.Debug("scan interrupted", "repo", repo.FullName())
 		default:
@@ -398,22 +329,7 @@ func isShutdown(err error) bool {
 	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
-// codeScanningExcluded reports whether repo's code-scanning signal should be
-// skipped, for either of the two reasons that warrant it. Unlike excludedName
-// (which drops a repo from EVERY signal), this leaves the repo's runs / PR /
-// issue signals intact and only suppresses the code-scanning read.
-//
-//   - The repo is a FORK and CODE_SCANNING_EXCLUDE_FORKS is set (the default):
-//     GitHub reports the alerts of the code the fork inherited as the fork's
-//     own, so the findings are the upstream project's, not this owner's. This
-//     is the batch rule, and it covers a fork the moment it is created.
-//   - The repo is named in CODE_SCANNING_EXCLUDE_REPOS: for repos whose
-//     code-scanning API always fails expectedly (a private repo without GitHub
-//     Advanced Security 403s every scan). The name lookup lowercases its
-//     argument because the set (parseExcludes) is keyed by lowercased names.
-//
-// Both reasons produce the identical outcome at the call site, which is what
-// keeps a skipped repo out of the integrity verdict either way.
+// codeScanningExcluded skips only code-scanning reads, preserving other signals.
 func (c *Collector) codeScanningExcluded(repo *ghsignal.Repo) bool {
 	return (c.csSkipForks && repo.Fork) || c.csExclude[strings.ToLower(repo.Name)]
 }
@@ -429,14 +345,7 @@ func (c *Collector) prune(cutoff time.Time) {
 	}
 }
 
-// loadState reads the persisted dedup set from the slot into c.seen. The
-// slot file is created empty on first use (the normal cold start); an
-// unreadable or corrupt file is tolerated with a warning, since the only cost
-// of a cold set is re-emitting runs still inside the lookback window. The
-// slot read is bounded (64 KiB), so an oversized file reads back truncated,
-// fails the JSON parse, and degrades to the same cold start. Called by New
-// only when statePath is set. Unmarshaling happens outside the flock; the
-// slot fn just returns its argument (the read idiom, no write).
+// loadState tolerates unreadable persisted state by starting cold.
 func (c *Collector) loadState() {
 	data, err := c.slot.Mutate(func(before []byte) []byte { return before })
 	if err != nil {
@@ -456,18 +365,7 @@ func (c *Collector) loadState() {
 	}
 }
 
-// saveState persists c.seen to the slot as one flock'd read-modify-write
-// transaction that UNIONS the on-disk set with the in-memory one, so a
-// concurrent writer's entries (the scheduled daemon racing an exec'd
-// `trigger`, or two overlapping triggers) are merged instead of overwritten,
-// closing the last-writer-wins lost update. Same-key entries carry
-// identical creation timestamps, so union order is irrelevant; stale
-// merged-in entries are re-pruned by the next scan's prune. Best-effort: a
-// marshal or write failure is logged but never fails the scan (the next
-// trigger just re-emits a few runs). Called at the end of Scan only when
-// statePath is set, after prune has bounded the set to the lookback window,
-// including after a SIGTERM breaks the repo loop, so the just-emitted run
-// IDs still land and the next trigger does not re-emit them.
+// saveState merges persisted and in-memory run IDs under the slot lock.
 func (c *Collector) saveState() {
 	var marshalErr error
 	if _, err := c.slot.Mutate(func(before []byte) []byte {
