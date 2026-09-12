@@ -1,4 +1,8 @@
 // Package urlsafe validates GitHub URL path segments.
+//
+// cplieger/registry-stats carries a separate copy of this character class with a
+// 255-byte whole-reference bound and percent-decoding that this one does not have.
+// Nothing synchronizes the two; a change here does not reach it.
 package urlsafe
 
 import "regexp"
