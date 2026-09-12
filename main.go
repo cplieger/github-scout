@@ -47,8 +47,9 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "health":
-			health.RunProbe(health.DefaultPath,
-				health.WithMaxAge(3*config.ScanInterval()))
+			// The daemon reports configuration warnings; the frequent probe stays silent.
+			interval, _ := config.ScanInterval()
+			health.RunProbe(health.DefaultPath, health.WithMaxAge(3*interval))
 		case "trigger":
 			runTrigger()
 		default:
@@ -114,12 +115,16 @@ func doTrigger() int {
 	return 0
 }
 
-// loadConfig loads config, installs the log level, logs the active config,
-// then validates it. Returns the config and whether it is valid; on invalid
-// config it logs the diagnostic and returns false, leaving the abort to the
-// caller.
+// loadConfig loads config, emits its warnings before the parsed LOG_LEVEL
+// applies (so an error-level setting cannot hide the warning that explains
+// it), installs the log level, logs the active config, then validates it.
+// Returns the config and whether it is valid; on invalid config it logs the
+// diagnostic and returns false, leaving the abort to the caller.
 func loadConfig() (config.Config, bool) {
-	cfg := config.Load()
+	cfg, warns := config.Load()
+	for _, w := range warns {
+		slog.LogAttrs(context.Background(), slog.LevelWarn, w.Msg, w.Attrs...)
+	}
 	setupLogging(cfg.LogLevel)
 	logConfig(&cfg)
 	if !cfg.Valid() {

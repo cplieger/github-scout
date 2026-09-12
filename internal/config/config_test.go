@@ -1,62 +1,12 @@
 package config
 
 import (
-	"bytes"
-	"io"
-	"log"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/cplieger/slogx/capture"
 )
-
-// saveLogGlobals captures the three globals slog.SetDefault mutates and restores
-// them at test end; call it before the swap. The returned func restores on demand.
-//
-// SetDefault also aims the log package at the installed handler and skips that
-// redirect for slog's own default handler, so reinstalling the previous logger
-// cannot undo it; slog's default handler emits through log.Output, so a dead log
-// writer silences the package. slog restores first because a non-default previous
-// handler re-runs the redirect.
-func saveLogGlobals(t *testing.T) func() {
-	t.Helper()
-	prevLogger, prevWriter, prevFlags := slog.Default(), log.Writer(), log.Flags()
-	restore := func() {
-		slog.SetDefault(prevLogger)
-		log.SetOutput(prevWriter)
-		log.SetFlags(prevFlags)
-	}
-	t.Cleanup(restore)
-	return restore
-}
-
-// TestSaveLogGlobalsRestoresTheLogPackageToo red-checks the two restores saveLogGlobals owns
-// beyond slog's own; drop either and this test fails.
-func TestSaveLogGlobalsRestoresTheLogPackageToo(t *testing.T) {
-	prevWriter, prevFlags := log.Writer(), log.Flags()
-	t.Cleanup(func() {
-		log.SetOutput(prevWriter)
-		log.SetFlags(prevFlags)
-	})
-	// Neither the process default nor what SetDefault installs (a slog
-	// handlerWriter and 0), so neither assertion can pass by coincidence.
-	log.SetOutput(io.Discard)
-	log.SetFlags(log.Lshortfile)
-
-	t.Run("swap", func(t *testing.T) {
-		_ = saveLogGlobals(t)
-		slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	})
-
-	if got := log.Writer(); got != io.Discard {
-		t.Errorf("log.Writer() = %T, want the writer set before the swap: slog.SetDefault aimed log at its own handler and restoring slog alone leaves it there", got)
-	}
-	if got := log.Flags(); got != log.Lshortfile {
-		t.Errorf("log.Flags() = %d, want %d: slog.SetDefault zeroes them and restoring slog alone leaves them at zero", got, log.Lshortfile)
-	}
-}
 
 func TestLoadDefaults(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "")
@@ -67,7 +17,7 @@ func TestLoadDefaults(t *testing.T) {
 	t.Setenv("CODE_SCANNING_EXCLUDE_REPOS", "")
 	t.Setenv("LOG_LEVEL", "")
 
-	cfg := Load()
+	cfg := loadCfg()
 
 	// Expected values are written out rather than read back from the
 	// constants they check: an assertion against DefaultScanInterval moves
@@ -98,7 +48,7 @@ func TestLoadParsesValues(t *testing.T) {
 	t.Setenv("EXCLUDE_REPOS", "noisy-repo, other ,")
 	t.Setenv("LOG_LEVEL", "debug")
 
-	cfg := Load()
+	cfg := loadCfg()
 	if cfg.Token != "ghp_secret" {
 		t.Errorf("Token not parsed")
 	}
@@ -132,12 +82,12 @@ func TestLoadParsesValues(t *testing.T) {
 func TestScanIntervalSentinelsFallBackToDefault(t *testing.T) {
 	for _, v := range []string{"off", "disabled", "0", "0s", "OFF"} {
 		t.Run(v, func(t *testing.T) {
-			rec := captureDefaultSlog(t)
 			t.Setenv("SCAN_INTERVAL", v)
-			if got := Load().ScanInterval; got != 15*time.Minute {
-				t.Errorf("SCAN_INTERVAL=%q ScanInterval = %v, want default 15m0s", v, got)
+			cfg, warns := Load()
+			if cfg.ScanInterval != 15*time.Minute {
+				t.Errorf("SCAN_INTERVAL=%q ScanInterval = %v, want default 15m0s", v, cfg.ScanInterval)
 			}
-			if n := rec.CountExact("invalid SCAN_INTERVAL, using default"); n != 1 {
+			if n := countWarning(warns, "invalid SCAN_INTERVAL, using default"); n != 1 {
 				t.Errorf("SCAN_INTERVAL=%q warned %d times, want exactly 1", v, n)
 			}
 		})
@@ -146,7 +96,7 @@ func TestScanIntervalSentinelsFallBackToDefault(t *testing.T) {
 
 func TestScanIntervalParsesDuration(t *testing.T) {
 	t.Setenv("SCAN_INTERVAL", "1h30m")
-	if got := Load().ScanInterval; got != 90*time.Minute {
+	if got := loadCfg().ScanInterval; got != 90*time.Minute {
 		t.Errorf("ScanInterval = %v, want 1h30m", got)
 	}
 }
@@ -175,37 +125,33 @@ func TestClampingAndFallbacks(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv(tt.key, tt.val)
-			if got := tt.selector(Load()); got != tt.want {
+			if got := tt.selector(loadCfg()); got != tt.want {
 				t.Errorf("%s = %v, want %v", tt.key, got, tt.want)
 			}
 		})
 	}
 }
 
-// TestClampedIntWarnsOverMax pins the over-max warning side effect. The clamp
-// uses min/max builtins (no boundary operators to mutate), so the only
-// remaining conditional is `clamped != v`, which gates this warning. Asserting
-// the warning fires when (and only when) the value is clamped down makes that
-// guard's mutants (==, removal) killable — the return-value table tests alone
-// cannot see a log-only branch.
+// TestClampedIntWarnsOverMax pins the over-max warning. The clamp uses
+// min/max builtins (no boundary operators to mutate), so the only remaining
+// conditional is `clamped != v`, which gates this warning. Asserting the
+// warning is returned when (and only when) the value is clamped down makes
+// that guard's mutants (==, removal) killable — the return-value table tests
+// alone cannot see it.
 func TestClampedIntWarnsOverMax(t *testing.T) {
-	capture := func(val string) string {
-		var buf bytes.Buffer
-		restore := saveLogGlobals(t)
-		defer restore()
-		slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	clampWarnings := func(val string) int {
 		t.Setenv("LOOKBACK_HOURS", val)
-		_ = Load()
-		return buf.String()
+		_, warns := Load()
+		return countWarning(warns, "env value clamped")
 	}
 
-	if out := capture("100000"); !strings.Contains(out, "env value clamped") {
-		t.Errorf("over-max value should warn; log = %q", out)
+	if n := clampWarnings("100000"); n != 1 {
+		t.Errorf("over-max value should warn once; got %d clamp warnings", n)
 	}
 	// In-range and at-boundary values must NOT warn (kills the negated guard).
 	for _, v := range []string{"48", "720", "1"} {
-		if out := capture(v); strings.Contains(out, "env value clamped") {
-			t.Errorf("LOOKBACK_HOURS=%s should not warn; log = %q", v, out)
+		if n := clampWarnings(v); n != 0 {
+			t.Errorf("LOOKBACK_HOURS=%s should not warn; got %d clamp warnings", v, n)
 		}
 	}
 }
@@ -238,7 +184,7 @@ func TestExcludeQueriesDefaultWhenUnset(t *testing.T) {
 	t.Setenv("PR_EXCLUDE_QUERY", "")
 	t.Setenv("ISSUE_EXCLUDE_QUERY", "")
 
-	cfg := Load()
+	cfg := loadCfg()
 
 	const (
 		wantPR    = "-author:app/renovate"
@@ -258,7 +204,7 @@ func TestExcludeQueriesOverriddenByEnv(t *testing.T) {
 	t.Setenv("PR_EXCLUDE_QUERY", "-author:dependabot")
 	t.Setenv("ISSUE_EXCLUDE_QUERY", "-label:wontfix")
 
-	cfg := Load()
+	cfg := loadCfg()
 
 	if cfg.PRExclude != "-author:dependabot" {
 		t.Errorf("PRExclude = %q, want -author:dependabot", cfg.PRExclude)
@@ -283,7 +229,7 @@ func TestParseLogLevels(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.in, func(t *testing.T) {
 			t.Setenv("LOG_LEVEL", tt.in)
-			if got := Load().LogLevel; got != tt.want {
+			if got := loadCfg().LogLevel; got != tt.want {
 				t.Errorf("LOG_LEVEL=%q LogLevel = %v, want %v", tt.in, got, tt.want)
 			}
 		})
@@ -292,17 +238,15 @@ func TestParseLogLevels(t *testing.T) {
 
 func TestLookbackAtMaxIsAcceptedWithoutWarning(t *testing.T) {
 	// LOOKBACK_HOURS exactly at the maximum is accepted as-is and must NOT
-	// emit a "clamped" warning. This pins the clamp boundary at v > hi
+	// return a "clamped" warning. This pins the clamp boundary at v > hi
 	// (a v >= hi mutant would warn spuriously at the legal maximum).
-	rec := captureDefaultSlog(t)
-
 	t.Setenv("LOOKBACK_HOURS", "720") // the maximum, 30 days
-	cfg := Load()
+	cfg, warns := Load()
 
 	if cfg.Lookback != 720*time.Hour {
 		t.Errorf("Lookback = %v, want 720h0m0s (max accepted as-is)", cfg.Lookback)
 	}
-	if n := rec.CountExact("env value clamped"); n != 0 {
+	if n := countWarning(warns, "env value clamped"); n != 0 {
 		t.Errorf("value at exactly the max should not warn; got %d clamp warnings", n)
 	}
 }
@@ -310,24 +254,57 @@ func TestLookbackAtMaxIsAcceptedWithoutWarning(t *testing.T) {
 func TestLookbackAboveMaxIsClampedWithWarning(t *testing.T) {
 	// One hour over the maximum is clamped down and warns exactly once —
 	// the positive control for the boundary pinned above.
-	rec := captureDefaultSlog(t)
-
 	t.Setenv("LOOKBACK_HOURS", "721")
-	cfg := Load()
+	cfg, warns := Load()
 
 	if cfg.Lookback != 720*time.Hour {
 		t.Errorf("Lookback = %v, want clamped to 720h0m0s", cfg.Lookback)
 	}
-	if n := rec.CountExact("env value clamped"); n != 1 {
+	if n := countWarning(warns, "env value clamped"); n != 1 {
 		t.Errorf("value over the max should warn once; got %d clamp warnings", n)
 	}
 }
 
-// captureDefaultSlog redirects the global slog logger (which config's clamp
-// and parse warnings target) to a shared capture.Recorder for the duration of
-// the test, restoring the previous default on cleanup (capture.Default).
-// Assertions use CountExact — the exact-match semantics the former hand-rolled
-// countingHandler had.
+// TestLoadNeverLogs pins the package contract: every parse problem is a
+// returned Warning, and nothing reaches the process logger, so the health
+// probe that discards them stays silent on a misconfigured container.
+func TestLoadNeverLogs(t *testing.T) {
+	rec := captureDefaultSlog(t)
+	t.Setenv("LOG_LEVEL", "loud")
+	t.Setenv("SCAN_INTERVAL", "off")
+	t.Setenv("LOOKBACK_HOURS", "100000")
+
+	_, warns := Load()
+
+	if len(warns) != 3 {
+		t.Errorf("Load() returned %d warnings, want 3 (LOG_LEVEL, SCAN_INTERVAL, LOOKBACK_HOURS)", len(warns))
+	}
+	if n := rec.Len(); n != 0 {
+		t.Errorf("Load() emitted %d log records, want 0", n)
+	}
+}
+
+// loadCfg is Load for the tests that assert on values only.
+func loadCfg() Config {
+	cfg, _ := Load()
+	return cfg
+}
+
+// countWarning reports how many returned warnings carry exactly msg.
+func countWarning(warns []Warning, msg string) int {
+	n := 0
+	for _, w := range warns {
+		if w.Msg == msg {
+			n++
+		}
+	}
+	return n
+}
+
+// captureDefaultSlog redirects the global slog logger to a capture.Recorder
+// for the duration of the test, restoring the previous default on cleanup
+// (capture.Default). Config never logs, so the recorder's only job here is to
+// prove that.
 func captureDefaultSlog(t *testing.T) *capture.Recorder {
 	t.Helper()
 	return capture.Default(t)
@@ -355,7 +332,7 @@ func TestScanIntervalBelowMinimumClamped(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("SCAN_INTERVAL", tt.val)
-			if got := Load().ScanInterval; got != tt.want {
+			if got := loadCfg().ScanInterval; got != tt.want {
 				t.Errorf("SCAN_INTERVAL=%q ScanInterval = %v, want %v", tt.val, got, tt.want)
 			}
 		})
@@ -367,7 +344,7 @@ func TestScanIntervalBelowMinimumClamped(t *testing.T) {
 // (also-lowercased) lookups match it. GitHub repo names are case-insensitive.
 func TestExcludeReposCaseInsensitive(t *testing.T) {
 	t.Setenv("EXCLUDE_REPOS", "Noisy-Repo, OTHER")
-	cfg := Load()
+	cfg := loadCfg()
 	if !cfg.ExcludeRepos["noisy-repo"] {
 		t.Errorf("ExcludeRepos missing lowercased key noisy-repo: %v", cfg.ExcludeRepos)
 	}
@@ -384,7 +361,7 @@ func TestExcludeReposCaseInsensitive(t *testing.T) {
 func TestLoadParsesCodeScanningExcludes(t *testing.T) {
 	t.Setenv("EXCLUDE_REPOS", "")
 	t.Setenv("CODE_SCANNING_EXCLUDE_REPOS", ".config, MyRepo ,")
-	cfg := Load()
+	cfg := loadCfg()
 	if !cfg.CodeScanningExcludeRepos[".config"] || !cfg.CodeScanningExcludeRepos["myrepo"] {
 		t.Errorf("CodeScanningExcludeRepos = %v, want .config+myrepo (lowercased)", cfg.CodeScanningExcludeRepos)
 	}
@@ -418,8 +395,8 @@ func TestCodeScanningExcludeForks(t *testing.T) {
 			if tc.set {
 				t.Setenv("CODE_SCANNING_EXCLUDE_FORKS", tc.raw)
 			}
-			if got := Load().CodeScanningExcludeForks; got != tc.want {
-				t.Errorf("Load().CodeScanningExcludeForks with CODE_SCANNING_EXCLUDE_FORKS=%q (set=%v) = %v, want %v",
+			if got := loadCfg().CodeScanningExcludeForks; got != tc.want {
+				t.Errorf("loadCfg().CodeScanningExcludeForks with CODE_SCANNING_EXCLUDE_FORKS=%q (set=%v) = %v, want %v",
 					tc.raw, tc.set, got, tc.want)
 			}
 		})
