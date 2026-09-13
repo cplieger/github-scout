@@ -49,7 +49,8 @@ func main() {
 		case "health":
 			// The daemon reports configuration warnings; the frequent probe stays silent.
 			interval, _ := config.ScanInterval()
-			health.RunProbe(health.DefaultPath, health.WithMaxAge(3*interval))
+			lease := health.Lease{Interval: interval, Cycles: 3}
+			health.RunProbe(health.DefaultPath, health.WithMaxAge(lease.Duration()))
 		case "trigger":
 			runTrigger()
 		default:
