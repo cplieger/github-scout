@@ -33,6 +33,20 @@ func newTestClientWithLogger(t *testing.T, srv *httptest.Server, logger *slog.Lo
 	return c
 }
 
+// newRetryTestClient allows exactly one retry per request, on a millisecond
+// backoff base so no test sits through httpx's real jittered delay.
+func newRetryTestClient(t *testing.T, srv *httptest.Server, logger *slog.Logger) *Client {
+	t.Helper()
+	c := NewClient(Options{
+		HTTP:      httpx.NewClient(5 * time.Second),
+		Token:     "test-token",
+		Logger:    logger,
+		RetryOpts: []httpx.Option{httpx.WithMaxAttempts(2), httpx.WithBaseDelay(time.Millisecond)},
+	})
+	c.baseURL = srv.URL
+	return c
+}
+
 func TestListReposFiltersOwnerAndArchived(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
@@ -596,27 +610,139 @@ func TestUnsafeSegmentsRejectedSearchAndCodeScanning(t *testing.T) {
 	}
 }
 
+// searchItemFmt is one /search/issues item, with a %d number placeholder.
+const searchItemFmt = `{"number":%d,"repository_url":"https://api.github.com/repos/cplieger/a","user":{"login":"cplieger"}}`
+
 // TestSearchIncompleteResultsErrors: GitHub's incomplete_results flag means
 // the search timed out server-side, so the set is partial and must error
-// rather than read as a confirmed-empty/complete result.
+// rather than read as a confirmed-empty/complete result. The whole retry
+// budget is spent first, so neither the retry nor the blind verdict can be
+// dropped silently.
 func TestSearchIncompleteResultsErrors(t *testing.T) {
+	var requests int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"incomplete_results":true,"items":[
-			{"number":1,"repository_url":"https://api.github.com/repos/cplieger/a","user":{"login":"cplieger"}}
-		]}`))
+		_, _ = w.Write([]byte(`{"incomplete_results":true,"items":[` + jsonList(searchItemFmt, 1, 1) + `]}`))
 	}))
 	defer srv.Close()
 
-	prs, err := newTestClient(t, srv).SearchOpenPRs(t.Context(), "cplieger", "")
-	if err == nil {
-		t.Fatalf("SearchOpenPRs must error when GitHub returns incomplete_results (a timed-out search is not a confirmed-empty result)")
-	}
-	if !strings.Contains(err.Error(), "incomplete results") {
-		t.Errorf("error = %v, want it to mention incomplete results", err)
+	prs, err := newRetryTestClient(t, srv, slog.Default()).SearchOpenPRs(t.Context(), "cplieger", "")
+	if !errors.Is(err, errIncompleteSearch) {
+		t.Fatalf("SearchOpenPRs error = %v, want it to wrap errIncompleteSearch (a timed-out search is not a confirmed-empty result)", err)
 	}
 	if prs != nil {
-		t.Errorf("prs = %v, want nil PRs on an incomplete-results error", prs)
+		t.Errorf("SearchOpenPRs returned %v, want nil PRs on an incomplete-results error (a truncated snapshot must never be reported as complete)", prs)
+	}
+	if requests != 2 {
+		t.Errorf("made %d search requests, want 2 (the whole retry budget is spent before the signal goes blind)", requests)
+	}
+}
+
+// TestSearchRetriesIncompleteResults: an incomplete_results page is retried
+// under the client's httpx budget, and a retry that succeeds reports the
+// complete set — the scan is not degraded and emits no Warn or Error.
+func TestSearchRetriesIncompleteResults(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		if requests == 1 {
+			_, _ = w.Write([]byte(`{"incomplete_results":true,"items":[` + jsonList(searchItemFmt, 1, 1) + `]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"incomplete_results":false,"items":[` + jsonList(searchItemFmt, 2, 1) + `]}`))
+	}))
+	defer srv.Close()
+
+	logger, rec := capture.New()
+	prs, err := newRetryTestClient(t, srv, logger).SearchOpenPRs(t.Context(), "cplieger", "")
+	if err != nil {
+		t.Fatalf("SearchOpenPRs over a retried incomplete page = %v, want nil", err)
+	}
+	if len(prs) != 2 {
+		t.Errorf("SearchOpenPRs returned %d PRs, want 2 (the complete body, never the truncated 1)", len(prs))
+	}
+	if requests != 2 {
+		t.Errorf("made %d search requests, want 2 (the incomplete page must be retried exactly once)", requests)
+	}
+	// httpx's recovery line: the proof the retry produced the success, rather
+	// than a first response that happened to be complete.
+	if got := rec.Count("succeeded after retry"); got != 1 {
+		t.Errorf("recovery lines = %d, want 1", got)
+	}
+	if got := rec.CountLevel(slog.LevelWarn, ""); got != 0 {
+		t.Errorf("a recovered search emitted %d Warn lines, want 0", got)
+	}
+	if got := rec.CountLevel(slog.LevelError, ""); got != 0 {
+		t.Errorf("a recovered search emitted %d Error lines, want 0", got)
+	}
+}
+
+// TestSearchRetriesServerError: moving the search path's retry to the outer
+// door must not lose the 5xx retry the inner door performed before. A
+// *httpx.StatusError is not transient on its own, so this passes only while
+// searchPage re-applies the status classification.
+func TestSearchRetriesServerError(t *testing.T) {
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		if requests == 1 {
+			http.Error(w, "server error", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[` + jsonList(searchItemFmt, 1, 1) + `]}`))
+	}))
+	defer srv.Close()
+
+	logger, _ := capture.New()
+	prs, err := newRetryTestClient(t, srv, logger).SearchOpenPRs(t.Context(), "cplieger", "")
+	if err != nil {
+		t.Fatalf("SearchOpenPRs over a retried 500 = %v, want nil", err)
+	}
+	if len(prs) != 1 {
+		t.Errorf("SearchOpenPRs returned %d PRs, want 1", len(prs))
+	}
+	if requests != 2 {
+		t.Errorf("made %d search requests, want 2 (a 5xx must still be retried after the retry door moved)", requests)
+	}
+}
+
+// TestSearchRetriesIncompleteResultsMidPagination: an incomplete page 2 is
+// retried on its own, so the query is never restarted and page 1's items are
+// counted exactly once.
+func TestSearchRetriesIncompleteResultsMidPagination(t *testing.T) {
+	requests := map[string]int{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page := r.URL.Query().Get("page")
+		requests[page]++
+		w.Header().Set("Content-Type", "application/json")
+		if page == "1" {
+			_, _ = w.Write([]byte(`{"items":[` + jsonList(searchItemFmt, perPage, 1000) + `]}`))
+			return
+		}
+		if page == "2" && requests[page] == 1 {
+			_, _ = w.Write([]byte(`{"incomplete_results":true,"items":[` + jsonList(searchItemFmt, 2, 2000) + `]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"items":[` + jsonList(searchItemFmt, 2, 2000) + `]}`))
+	}))
+	defer srv.Close()
+
+	logger, _ := capture.New()
+	prs, err := newRetryTestClient(t, srv, logger).SearchOpenPRs(t.Context(), "cplieger", "")
+	if err != nil {
+		t.Fatalf("SearchOpenPRs over a retried incomplete page 2 = %v, want nil", err)
+	}
+	if len(prs) != perPage+2 {
+		t.Errorf("SearchOpenPRs returned %d PRs, want %d (page 1 counted once, page 2's complete set appended)", len(prs), perPage+2)
+	}
+	if requests["1"] != 1 {
+		t.Errorf("fetched page 1 %d times, want 1 (a retry must not restart the query)", requests["1"])
+	}
+	if requests["2"] != 2 {
+		t.Errorf("fetched page 2 %d times, want 2 (only the incomplete page is refetched)", requests["2"])
 	}
 }
 
