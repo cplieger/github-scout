@@ -216,9 +216,10 @@ func (c *Client) setHeaders(req *http.Request) {
 
 // getJSON fetches reqURL with auth + version headers via the httpx retry
 // transport and decodes the body into out. The body is capped so a
-// runaway response can't exhaust memory.
-func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
-	opts := make([]httpx.GetOption, 0, len(c.retryOpts)+3)
+// runaway response can't exhaust memory. extra applies last, so it overrides
+// the client's own retry options.
+func (c *Client) getJSON(ctx context.Context, reqURL string, out any, extra ...httpx.GetOption) error {
+	opts := make([]httpx.GetOption, 0, len(c.retryOpts)+3+len(extra))
 	for _, o := range c.retryOpts {
 		opts = append(opts, o)
 	}
@@ -230,6 +231,7 @@ func (c *Client) getJSON(ctx context.Context, reqURL string, out any) error {
 		// app's configured (JSON) handler and are injectable in tests.
 		httpx.WithLogger(c.logger),
 	)
+	opts = append(opts, extra...)
 	body, err := httpx.GetBytes(ctx, c.http, reqURL, opts...)
 	if err != nil {
 		return mapStatusError(err)
@@ -337,6 +339,8 @@ type apiSearchResp struct {
 	IncompleteResults bool            `json:"incomplete_results"`
 }
 
+var errIncompleteSearch = errors.New("GitHub returned incomplete results (search timed out)")
+
 // apiSearchItem is one search result. The endpoint returns both issues and
 // pull requests; the `is:pr` / `is:issue` query qualifier selects which.
 type apiSearchItem struct {
@@ -408,6 +412,33 @@ func (c *Client) SearchOpenIssues(ctx context.Context, owner, exclude string) ([
 	return issues, nil
 }
 
+// searchPage fetches one /search/issues page, retrying a page whose body
+// reports incomplete_results. That flag rides inside a decoded 200 body, so the
+// transport-level loop has already returned by the time anything can read it —
+// a 200 is not a retryable status — which is why the retry runs at this door
+// instead. The inner door is held to one attempt so the two budgets don't
+// multiply, which leaves the status classification to this one.
+func (c *Client) searchPage(ctx context.Context, reqURL string) (apiSearchResp, error) {
+	opts := make([]httpx.DoOption, 0, len(c.retryOpts)+2)
+	for _, o := range c.retryOpts {
+		opts = append(opts, o)
+	}
+	opts = append(opts, httpx.WithLabel("github search"), httpx.WithLogger(c.logger))
+	return httpx.Do(ctx, func(ctx context.Context) (apiSearchResp, error) {
+		var resp apiSearchResp
+		if err := c.getJSON(ctx, reqURL, &resp, httpx.WithMaxAttempts(1)); err != nil {
+			if se, ok := errors.AsType[*httpx.StatusError](err); ok && httpx.IsRetryableStatus(se.Code) {
+				return apiSearchResp{}, httpx.MarkTransient(err)
+			}
+			return apiSearchResp{}, err
+		}
+		if resp.IncompleteResults {
+			return apiSearchResp{}, httpx.MarkTransient(errIncompleteSearch)
+		}
+		return resp, nil
+	}, opts...)
+}
+
 // search runs a paginated /search/issues query. base is the qualifier
 // prefix ("is:open is:pr"); owner scopes to user:<owner>; exclude is
 // appended verbatim. The Search API caps at 1000 results; maxPages bounds
@@ -433,15 +464,11 @@ func (c *Client) search(ctx context.Context, base, owner, exclude string) ([]api
 		v.Set("page", strconv.Itoa(page))
 		reqURL := c.baseURL + "/search/issues?" + v.Encode()
 
-		var resp apiSearchResp
-		if err := c.getJSON(ctx, reqURL, &resp); err != nil {
+		resp, err := c.searchPage(ctx, reqURL)
+		if err != nil {
 			return nil, fmt.Errorf("search %q page %d: %w", base, page, err)
 		}
 		items = append(items, resp.Items...)
-		if resp.IncompleteResults {
-			return nil, fmt.Errorf("search %q page %d: GitHub returned incomplete results"+
-				" (search timed out)", base, page)
-		}
 		if len(resp.Items) < perPage {
 			return items, nil // last page
 		}
