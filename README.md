@@ -275,6 +275,32 @@ Every panel is built on a single Loki selector, for example:
 {container="github-scout"} | json | msg=`open pull request`
 ```
 
+The dashboard is versioned with the app: the JSON at release `<tag>` matches
+the log fields that image emits, and its `uid` is stable, so a re-import
+updates the existing dashboard in place. Pin it the way you pin the image,
+using the tag of the image you run. The release asset is
+`https://github.com/cplieger/github-scout/releases/download/<tag>/grafana-dashboard.json`,
+with `grafana-dashboard.json.sha256` beside it; it works as grafana-operator
+`spec.url`, as the Grafana Helm chart `dashboards.<provider>.<name>.url`, or
+as a Terraform `http` data source. The OCI artifact is
+`ghcr.io/cplieger/github-scout/dashboard:<tag>` for grafana-operator
+`spec.oci`. Renovate tracks either form: the `github-releases` datasource for
+the URL, the `docker` datasource for the OCI tag.
+
+```yaml
+apiVersion: grafana.integreatly.org/v1beta1
+kind: GrafanaDashboard
+metadata:
+  name: github-scout
+spec:
+  instanceSelector:
+    matchLabels:
+      dashboards: grafana
+  oci:
+    reference: ghcr.io/cplieger/github-scout/dashboard:<tag>
+    path: grafana-dashboard.json
+```
+
 ### Alerting
 
 github-scout has no metrics endpoint; its operational state is in its JSON
