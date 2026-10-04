@@ -6,7 +6,8 @@ services:
     restart: unless-stopped
 
     environment:
-      # Required. Keep the token in a .env file beside this compose; see the README for token scopes.
+      # Before the first start, create a .env file beside this file with two lines,
+      # GITHUB_OWNER=<your GitHub login> and GITHUB_TOKEN=<a read-only token>. The README lists the token permissions.
       GITHUB_OWNER: "${GITHUB_OWNER:?set GITHUB_OWNER - the login whose repos to scan}"
       GITHUB_TOKEN: "${GITHUB_TOKEN:?set GITHUB_TOKEN - see README for token scopes}"
-      SCAN_INTERVAL: "15m"  # Go duration between scans (the daemon always self-schedules)
+      SCAN_INTERVAL: "15m"  # time between scans, such as 15m or 1h
