@@ -88,7 +88,7 @@ A value github-scout cannot read falls back to its default, and a value out of r
 
 github-scout opens no port and runs no web server. It sends only read requests, and only to `api.github.com`, so give it a read-only token. The token travels only in the request header to GitHub and never appears in the log, which records only whether a token is set. Keep `.env` out of git.
 
-The image is distroless, with no shell, and runs as a non-root user. It writes only to `/tmp`, where it keeps a health marker and two small state files. [Security](docs/security.md) has the hardened compose settings and what the image contains.
+The image is distroless, with no shell, and runs as a non-root user. It writes only to `/tmp`, where it keeps a health marker and two small state files. [Security](docs/hardening.md) has the hardened compose settings and what the image contains.
 
 ## Troubleshooting
 
@@ -107,7 +107,7 @@ github-scout writes one JSON log line for each open pull request, issue, alert a
 
 - [Configuration](docs/configuration.md) covers the token permissions, the exclusions and one-shot scans.
 - [Monitoring and alerts](docs/monitoring.md) covers the log lines, the Grafana dashboard and the alert rules.
-- [Security](docs/security.md) covers the hardened compose settings and what the image contains.
+- [Security](docs/hardening.md) covers the hardened compose settings and what the image contains.
 - [How github-scout works](docs/how-it-works.md) covers scanning, deduplication and GitHub API use.
 
 ## Credits

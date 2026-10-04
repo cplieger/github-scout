@@ -36,7 +36,7 @@ github-scout keeps no database, and Loki holds the history. Its local state is t
 Losing either file costs at most one scan that logs more lines or uses more of the rate limit. Three things start the run file cold:
 
 - A container recreate clears `/tmp`. A plain restart keeps it with the shipped compose file.
-- With the hardened profile in [Security](security.md), `/tmp` is a tmpfs, which Docker empties on every container start.
+- With the hardened profile in [Security](hardening.md), `/tmp` is a tmpfs, which Docker empties on every container start.
 - The run file is read through a 64 KiB limit. On an account with thousands of runs inside the lookback window it outgrows that limit, and each start logs `dedup state corrupt; starting cold`.
 
 After a cold start, the first scan logs every run inside the lookback window again. The dashboard's failed-run tile and table count distinct run IDs, so their numbers stay right.
