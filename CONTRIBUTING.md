@@ -21,7 +21,7 @@ fit. Keep that focus in mind when proposing changes; "surface an actionable
 item" fits, "expose a trend line" usually doesn't.
 
 The design rationale (logs over metrics, the event-once vs snapshot emission
-models, stateless) lives in the [README](README.md#design). Changes that
+models, stateless) lives in the [how-it-works page](docs/how-it-works.md). Changes that
 contradict those decisions need a strong justification.
 
 ## Architecture

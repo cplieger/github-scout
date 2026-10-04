@@ -1412,7 +1412,7 @@
     {
       "id": 41,
       "title": "Scan Integrity",
-      "description": "DEGRADED (red) when github-scout logged an ERROR within the snapshot window: a scan that could not run, e.g. repo discovery failed (a dead or rate-limited token, or a transient network timeout reaching GitHub; this also marks the container unhealthy). Routine per-repo WARNs are intentionally excluded so the tile is not permanently red, in particular code scanning listing failed (a 403 for repos without GitHub Advanced Security, which is expected). OK (green) when there are no errors in the window; liveness is the Scout Status tile beside it. Check the github-scout container logs for the ERROR detail.",
+      "description": "DEGRADED (red) when github-scout logged an ERROR within the snapshot window. An ERROR means a scan could not run, for example because repo discovery failed. A dead or rate-limited token causes that, and so does a network timeout reaching GitHub. Routine per-repo WARNs are excluded so the tile is not permanently red. One of them is a failed code scanning listing, an expected 403 for repos without GitHub Advanced Security. OK (green) when the window holds no errors. The Scout Status tile beside it shows liveness. The github-scout container logs carry the ERROR detail.",
       "type": "stat",
       "gridPos": {
         "h": 4,

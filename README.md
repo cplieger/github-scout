@@ -3,83 +3,37 @@
 [![Image Size](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/github-scout/badges/size.json)](https://github.com/cplieger/github-scout/pkgs/container/github-scout) [![Platforms](https://img.shields.io/badge/platforms-amd64%20%7C%20arm64-blue)](https://github.com/cplieger/github-scout/pkgs/container/github-scout) [![base: Distroless](https://img.shields.io/badge/base-Distroless_nonroot-4285F4?logo=google)](https://github.com/cplieger/github-scout/blob/main/Dockerfile) [![Mutation](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/cplieger/github-scout/badges/mutation.json)](https://github.com/cplieger/github-scout/issues?q=label%3Agremlins-tracker) [![SBOM](https://img.shields.io/badge/SBOM-SPDX-1D4ED8)](https://github.com/cplieger/github-scout/releases)
 
 <!-- hub-overview BEGIN -->
-One cross-repo view of everything that needs a look across your GitHub repos:
-open pull requests, open issues, code-scanning alerts, and failed Actions runs,
-shipped to Loki and rendered by a ready-made Grafana dashboard, with a
-click-through link on every row.
+github-scout puts the open pull requests, open issues, code-scanning alerts and failed Actions runs across your GitHub repositories on one Grafana dashboard, with a link on every row. It only reads from GitHub.
 
-## The problem
-
-If you have more than a handful of repositories, "is anything waiting on me:
-a stale PR, an open issue, a security alert, a broken nightly job?" is a
-surprisingly hard question to answer:
-
-- The **Grafana GitHub datasource plugin** can list workflow runs for exactly
-  one repository **and** one workflow file per query. There is no "all
-  workflows, all repos" mode.
-- GitHub's **org-level endpoints** don't help a personal account, and **private
-  repos** have no cross-repo feed at all.
-- The GitHub UI shows you each of these **one repo at a time**, and email
-  notifications are easy to tune out.
-
-So a broken nightly job (or an open code-scanning alert) in a repo you
-haven't opened in a week goes unnoticed. github-scout closes that gap.
+![The github-scout Grafana dashboard: counts of open pull requests, open issues, code-scanning alerts and failed CI runs, above tables of open pull requests and issues with links](docs/images/header.png)
 
 ## What it does
 
-github-scout polls every repository it can see for a configured owner on a
-schedule and surfaces four actionable signals across all of them, each as a
-structured JSON log line. Ship those lines to Loki with Grafana Alloy (or any
-log collector) and the bundled dashboard gives you:
+github-scout shows you what is waiting for you across all your repositories, in one place:
 
-- **Open pull requests**: every open PR across every repo, newest first, with a
-  click-through link (Renovate PRs filtered out by default);
-- **Open issues**: every open issue, with labels and author (Renovate and
-  auto-generated trackers filtered out by default);
-- **Code-scanning alerts**: every open CodeQL / code-scanning alert, colour-
-  coded by severity;
-- **Failed Actions runs**: every failed, timed-out, or startup-failed run across
-  all repos, newest first, with a click-through link;
-- a **scout-health tile** so you know the watcher itself is still scanning.
+- Lists open pull requests and issues, newest first, leaving out Renovate's by default.
+- Lists open code-scanning alerts, colored by severity.
+- Lists failed, timed-out and startup-failed Actions runs, with a link to each run.
+- Adds a new repository or workflow on the next scan, with nothing to configure.
+- Marks the counts a scan could not check, so you can tell an unchecked zero from a confirmed zero.
 
-It discovers repositories and workflows dynamically on every scan, so a new repo
-(or a new workflow inside an existing one) is picked up automatically with zero
-configuration changes.
+## Who it is for
+
+github-scout is built for people with many GitHub repositories, private ones included, who already run Grafana and Loki. It checks each repository every 15 minutes. It covers up to 500 repositories of your own github.com account, not organization repositories or Dependabot alerts.
+
+You need Grafana, Loki, a log collector such as Grafana Alloy, and a read-only GitHub personal access token.
+
+Other tools suit other needs:
+
+- Consider the [Grafana GitHub data source](https://grafana.com/grafana/plugins/grafana-github-datasource/) if you want Grafana panels that query the GitHub API directly for your repositories and projects.
+- Consider [gh-dash](https://github.com/dlvhdr/gh-dash) if you want to work through pull requests and issues from a terminal, with diff, comment and checkout built in.
+
+github-scout is free software under the GPL-3.0-or-later license.
 <!-- hub-overview END -->
 
-## Design
-
-### Logs, not metrics
-
-A workflow run, an open PR, or an alert is an event with a payload: a title,
-an author, a URL you want to click. That is log-shaped data, not a numeric
-time-series; a Prometheus counter would say _how many_ and lose everything
-actionable. So github-scout writes structured logs, and the dashboard shows
-counts (via LogQL) while every row keeps its repo, title, and link.
-
-### Two emission models
-
-The four signals split into two shapes, and the split is how you read the
-dashboard:
-
-- **Event-once** (Actions runs). A completed run is emitted **exactly once**,
-  as `msg="workflow run"` carrying its `conclusion`, so a plain log count
-  equals the number of distinct runs. Dedup state survives restarts; a cold
-  start at worst re-logs runs still inside the lookback window, and the
-  dashboard also dedups by run ID, so counts stay correct either way.
-- **Snapshot** (open PRs, open issues, code-scanning alerts). These are
-  current _state_: the full set is re-emitted **every scan**, a closed item
-  stops appearing, and the dashboard reads the most recent scan as
-  "what is open right now".
-
-github-scout keeps **no database**; history lives in Loki. Its only local
-state is two disposable files under `/tmp`: the event-once dedup set and an
-HTTP revalidation cache that lets unchanged GitHub resources answer without
-charging the rate limit. Losing either costs at most one noisier, full-price
-scan. Logs are `slog` JSON on stdout with UTC timestamps, zone-stable
-regardless of the container's `TZ`.
-
 ## Quick start
+
+The image is on GitHub Container Registry and Docker Hub, for `amd64` and `arm64`. This is the [`compose.yaml`](compose.yaml) in this repository.
 
 ```yaml
 services:
@@ -89,398 +43,80 @@ services:
     restart: unless-stopped
 
     environment:
-      GITHUB_OWNER: "your-login"   # user or org whose repos to scan
-      GITHUB_TOKEN: "ghp_xxx"      # see token scopes below
-      SCAN_INTERVAL: "15m"         # Go duration between scans (always self-scheduled)
+      # Before the first start, create a .env file beside this file with two lines,
+      # GITHUB_OWNER=<your GitHub login> and GITHUB_TOKEN=<a read-only token>. The README lists the token permissions.
+      GITHUB_OWNER: "${GITHUB_OWNER:?set GITHUB_OWNER - the login whose repos to scan}"
+      GITHUB_TOKEN: "${GITHUB_TOKEN:?set GITHUB_TOKEN - see README for token scopes}"
+      SCAN_INTERVAL: "15m"  # time between scans, such as 15m or 1h
 ```
 
-The image is published to `ghcr.io/cplieger/github-scout` and mirrored to
-Docker Hub as `cplieger/github-scout`. Pin a digest in production.
+1. On GitHub, create a [fine-grained personal access token](https://github.com/settings/personal-access-tokens/new) for your account.
+2. Give the token **All repositories**, and **Read-only** access to **Actions**, **Pull requests**, **Issues** and **Code scanning alerts**.
+3. In the folder that holds `compose.yaml`, create a file named `.env` with your login and the token:
 
-### Token scopes
+   ```text
+   GITHUB_OWNER=your-login
+   GITHUB_TOKEN=github_pat_your_token
+   ```
 
-github-scout reads four signals, so the token needs read access to repository
-metadata, Actions, pull requests, issues, and code scanning. Either token type
-works, and both keep discovery dynamic (new repos auto-included):
+4. Run `docker compose up -d`.
+5. Have your log collector send the container's logs to Loki with the label `container="github-scout"`, which every dashboard panel selects on.
+6. In Grafana, import [`grafana-dashboard.json`](grafana-dashboard.json). It reads from your default Loki data source.
 
-- **Classic PAT:** `repo` covers private **and** public repos for all four
-  signals, or `public_repo` for public-only repositories. `workflow` and
-  `security_events` are **not** separate requirements (`repo` already grants
-  Actions and code-scanning read).
-- **Fine-grained PAT (recommended):** Repository access = **All repositories**
-  (so repos you create later are discovered automatically); Repository
-  permissions, all **Read-only**: **Actions**, **Pull requests**, **Issues**,
-  **Code scanning alerts**. **Metadata: Read** is added automatically and powers
-  the repo listing. Avoid "Only select repositories": it freezes the set, so new
-  repos silently stop being scanned.
-
-github-scout distinguishes "no data" from "couldn't check". A repo that has
-never run code scanning returns 404, a benign no-data outcome; a token lacking
-the code-scanning permission returns 403, which is surfaced as a warning and
-marks the scan degraded rather than being read as zero alerts. A private repo
-on a plan without GitHub Advanced Security always returns 403 on code
-scanning; list it in `CODE_SCANNING_EXCLUDE_REPOS` to skip just that signal.
-The token is only ever sent to `api.github.com` as a Bearer header and is
-never logged (only its presence is logged at startup).
-
-### Forks are skipped for code scanning by default
-
-GitHub reports the alerts of the code a fork **inherited** as the fork's own,
-so a fork of a large project surfaces hundreds of findings in code you did not
-write. One fork of a big upstream project measured 500 open alerts against 6
-across every first-party repo, which drowns the signal the panel exists to
-raise. `CODE_SCANNING_EXCLUDE_FORKS` therefore defaults to `true` and skips
-that one signal on every fork, as a batch, so a new fork is covered the moment
-you create it rather than when you remember to add its name.
-
-The skip is the same one `CODE_SCANNING_EXCLUDE_REPOS` applies: a fork keeps its
-runs, PR and issue signals, because those are your own work, and a skipped repo
-counts as neither a readable signal nor a failure, so it can neither mark a scan
-degraded nor mask a real code-scanning blackout. Set
-`CODE_SCANNING_EXCLUDE_FORKS=false` if your forks carry enough of your own code
-to be worth scanning; the two mechanisms are independent, so you can leave the
-flag off and still name individual forks in `CODE_SCANNING_EXCLUDE_REPOS`.
-
-Archived repos need no entry in either list: they are dropped at discovery, so
-they reach no signal at all.
+Run `docker logs github-scout`. You should see a line with `"msg":"scan complete"`. If you see `"msg":"repo discovery failed"` instead, GitHub rejected the token or could not be reached. Check the `GITHUB_TOKEN` line of `.env`.
 
 ## Configuration reference
 
-| Variable | Description | Default | Required |
-| --- | --- | --- | --- |
-| `GITHUB_OWNER` | GitHub login (user or org) whose repositories are scanned | _none_ | Yes |
-| `GITHUB_TOKEN` | Personal access token (see scopes above) | _none_ | Yes |
-| `SCAN_INTERVAL` | Gap between scans, a Go duration (`15m`, `1h`). No disable value | `15m` | No |
-| `LOOKBACK_HOURS` | How far back each scan considers completed runs (also bounds the dedup set) | `72` | No |
-| `EXCLUDE_REPOS` | Comma-separated **bare** repo names to skip (silences all signals) | _(unset)_ | No |
-| `CODE_SCANNING_EXCLUDE_FORKS` | Skip the code-scanning signal on every fork (a fork's alerts are the upstream project's). Set `false` to read forks too | `true` | No |
-| `CODE_SCANNING_EXCLUDE_REPOS` | Comma-separated bare repo names to skip for code scanning only (others kept) | _(unset)_ | No |
-| `PR_EXCLUDE_QUERY` | Raw GitHub search qualifiers appended to the open-PR search | `-author:app/renovate` | No |
-| `ISSUE_EXCLUDE_QUERY` | Raw GitHub search qualifiers appended to the open-issue search | `-author:app/renovate -label:renovate -label:auto-generated` | No |
-| `LOG_LEVEL` | `debug`, `info`, `warn`, `error` | `info` | No |
+Settings are environment variables, read once at start, so recreate the container after a change. github-scout needs no volume and opens no port.
 
-An unparseable value falls back to the default (a bad `SCAN_INTERVAL` keeps
-scanning at 15m); an out-of-range value is clamped (`SCAN_INTERVAL` to between
-1m and 365d, `LOOKBACK_HOURS` to between 1 and 720 hours), so misconfiguration
-degrades safely rather than crashing. No value disables scanning (`off` /
-`disabled` / `0` fall back to the default too); for on-demand scans, use the
-`trigger` subcommand.
+| Variable | Description | Default |
+| --- | --- | --- |
+| `GITHUB_OWNER` | Your GitHub login. One container scans the repositories this one account owns | required |
+| `GITHUB_TOKEN` | A read-only personal access token of that account, with the [permissions](docs/configuration.md#token-permissions) above | required |
+| `SCAN_INTERVAL` | Time between scans, such as `15m` or `1h`, from 1 minute to 365 days | `15m` |
+| `LOOKBACK_HOURS` | How many hours back each scan reads finished Actions runs, from 1 to 720 | `72` |
+| `EXCLUDE_REPOS` | Comma-separated repository names, without the owner, left out of every list | _(unset)_ |
+| `CODE_SCANNING_EXCLUDE_REPOS` | Comma-separated repository names whose code-scanning alerts are not read. Their runs, pull requests and issues stay | _(unset)_ |
+| `CODE_SCANNING_EXCLUDE_FORKS` | Skip code-scanning alerts on every fork, which reports the alerts of the code it copied. `false` reads them | `true` |
+| `PR_EXCLUDE_QUERY` | GitHub search terms added to the open pull request search | `-author:app/renovate` |
+| `ISSUE_EXCLUDE_QUERY` | GitHub search terms added to the open issue search | `-author:app/renovate -label:renovate -label:auto-generated` |
+| `LOG_LEVEL` | `debug`, `info`, `warn` or `error` | `info` |
 
-### Run modes
-
-- **Scheduled** (`SCAN_INTERVAL=15m`, the default): an internal jittered timer
-  drives the scans in the resident process.
-- **Trigger** (`github-scout trigger`): one scan, then exit 0/1: the dev
-  loop (`go run . trigger`), cron on a bare host, CI. Its output goes to the
-  invoking context's stdout, exactly where a one-shot's output belongs.
-
-github-scout has no externally-scheduled container mode. Its stdout **is**
-the product: the dashboard, the alert rules, and every query in this README
-consume the container's main-process log stream. A scan executed inside the
-container by an external scheduler (`docker exec … trigger`) writes to the
-exec session instead, so every signal it collects is invisible to all of
-them. In a container, the internal timer is the scheduler.
-
-The run dedup set persists across `trigger` processes, so each completed run is
-still emitted exactly once (see _Two emission models_ above for the
-`/tmp/seen-runs.json` details and the container-recreate caveat).
-
-## Output
-
-github-scout writes JSON to stdout, one line per item. A failed run looks like:
-
-```json
-{
-  "time": "2026-06-21T12:00:03Z",
-  "level": "INFO",
-  "msg": "workflow run",
-  "repo": "owner/example",
-  "workflow": "CI",
-  "conclusion": "failure",
-  "branch": "main",
-  "event": "push",
-  "run_number": 1060,
-  "run_id": 12345678,
-  "url": "https://github.com/owner/example/actions/runs/12345678",
-  "created_at": "2026-06-19T08:07:35Z"
-}
-```
-
-Each signal has a stable `msg` the dashboard and any Loki ruler alert filter on.
-Every line also carries `repo`, `url`, and `created_at`:
-
-- `workflow run` (event-once): `workflow`, `conclusion`, `branch`, `event`, `run_number`, `run_id`
-- `open pull request` (snapshot): `number`, `title`, `author`, `draft`
-- `open issue` (snapshot): `number`, `title`, `author`, `labels`
-- `code scanning alert` (snapshot): `number`, `rule`, `severity`, `tool`
-
-The `conclusion` is any completed-run outcome (`success`, `failure`,
-`timed_out`, `startup_failure`, `cancelled`, `skipped`, or `neutral`); the
-dashboard treats `failure` / `timed_out` / `startup_failure` as the failure set
-(the failed-run count tile and the failures table). Each scan also logs a
-`scan complete` summary line (`scanned`, `skipped`, `open_prs`, `open_issues`,
-`code_alerts`, `new_runs`, `new_failures`, `tracked`, `duration`), plus three
-data-integrity fields: `errors` (how many signal collections failed this scan),
-`degraded` (`true` when `errors > 0`, or when discovery returned zero repos so
-nothing was scanned), and `failed_signals` (the comma-joined signals it could
-not read, for example `code_scanning`). These distinguish a verified `0` ("checked,
-nothing there") from an unverified `0` ("could not check"), which matters most
-for the code-scanning security signal.
-
-A repo-discovery failure logs at `error` level and fails a one-shot `trigger`
-run (exit 1); no scan outcome flips container health (see _Healthcheck_). An
-incidental per-repo failure (a transient error, or one private repo without
-GitHub Advanced Security returning 403 on code scanning) marks the scan
-`degraded` but is not paged; silence an always-403 private repo with
-`CODE_SCANNING_EXCLUDE_REPOS`. A systemic failure (a rejected token, a rate
-limit, a token that lost repo visibility, or a signal dark across every repo
-that has it) escalates to a distinct `error`-level `scan degraded` line
-carrying a machine `cause`, a human `reason`, and `failed_signals`, so an
-alert fires on a scan that went blind. See
-[CONTRIBUTING.md](CONTRIBUTING.md#systemic-failure-causes) for the full
-`cause` enum and the exact escalation rules.
-
-## Grafana integration
-
-Ship the container's stdout to Loki (Grafana Alloy's Docker log discovery does
-this with no extra configuration) and import `grafana-dashboard.json` (or drop
-it into a file-based dashboard provider). The dashboard uses a standard Loki
-datasource (no plugins) and is organised top to bottom in the order you ask
-questions:
-
-1. **At a glance**: four count tiles (open PRs, open issues, code-scanning
-   alerts, and failed CI runs in the picker range).
-2. **Open work**: linked tables of the open PRs, issues, and code-scanning
-   alerts as of the most recent scan.
-3. **Recent CI failures**: a linked table of failed, timed-out, and
-   startup-failed runs in the selected time range (successful runs are omitted).
-4. **Scout health**: a STALLED tile (red when no scan completed recently)
-   alongside a **Scan Integrity** tile that stays green while recent scans read
-   every signal and turns red when a scan logged an error (a signal or a repo
-   listing it could not read, so a `0` above is unverified rather than confirmed
-   empty).
-
-Two controls shape what you see:
-
-- The **Snapshot window** variable sets how far back the open-work tables and
-  their tiles read for the latest snapshot. It must be at least `SCAN_INTERVAL`;
-  the default `30m` gives 2x headroom at the default 15m scan interval. It does
-  not affect the failure panels.
-- The **time picker** affects only the failed-runs tile and table; keep it
-  within `LOOKBACK_HOURS` (default 72h), the furthest back each scan looks.
-
-Every panel is built on a single Loki selector, for example:
-
-```logql
-{container="github-scout"} | json | msg=`open pull request`
-```
-
-The dashboard is versioned with the app: the JSON at release `<tag>` matches
-the log fields that image emits, and its `uid` is stable, so a re-import
-updates the existing dashboard in place. Pin it the way you pin the image,
-using the tag of the image you run. The release asset is
-`https://github.com/cplieger/github-scout/releases/download/<tag>/grafana-dashboard.json`,
-with `grafana-dashboard.json.sha256` beside it; it works as grafana-operator
-`spec.url`, as the Grafana Helm chart `dashboards.<provider>.<name>.url`, or
-as a Terraform `http` data source. The OCI artifact is
-`ghcr.io/cplieger/github-scout/dashboard:<tag>` for grafana-operator
-`spec.oci`. Renovate tracks either form: the `github-releases` datasource for
-the URL, the `docker` datasource for the OCI tag.
-
-```yaml
-apiVersion: grafana.integreatly.org/v1beta1
-kind: GrafanaDashboard
-metadata:
-  name: github-scout
-spec:
-  instanceSelector:
-    matchLabels:
-      dashboards: grafana
-  oci:
-    reference: ghcr.io/cplieger/github-scout/dashboard:<tag>
-    path: grafana-dashboard.json
-```
-
-### Alerting
-
-github-scout has no metrics endpoint; its operational state is in its JSON
-logs. Ship the container's logs to Loki as above and evaluate these two rules
-with [Loki's ruler](https://grafana.com/docs/loki/latest/alert/); firing alerts
-deliver through your Alertmanager exactly like Prometheus metric alerts. The
-first catches a scan that ran but went blind (a rejected token, a rate limit,
-or a signal dark across every repo); the second is a deadman that fires when no
-scan completes at all.
-
-```yaml
-groups:
-  - name: github-scout
-    rules:
-      - alert: GithubScoutScanDegraded
-        expr: |
-          sum(count_over_time({container="github-scout"} |= `scan degraded` | json | msg=`scan degraded` [40m])) >= 2
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "github-scout scans degraded (signal counts unverified)"
-          description: >
-            github-scout logged repeated degraded scans in the last 40m: a
-            signal could not be read, so the dashboard counts (especially Code
-            Scanning Alerts) may read 0 because it could not check, not because
-            nothing is there. The `scan degraded` log line carries the cause
-            (token_invalid / rate_limited / no_repos_visible /
-            code_scanning_blind / runs_blind / signal_blind) and the
-            failed_signals field.
-      - alert: GithubScoutScanStalled
-        expr: |
-          absent_over_time({container="github-scout"} |= `scan complete` [40m])
-        for: 0m
-        labels:
-          severity: warning
-        annotations:
-          summary: "github-scout has not completed a scan in 40m"
-          description: >
-            No "scan complete" line from github-scout in 40m (it scans every
-            ~15m by default). The scanner is wedged, the container is down, or
-            the token was revoked at repo discovery, so every dashboard panel
-            goes stale and silently reads empty. The Scan Integrity tile cannot
-            flag this (no scan ran), so this liveness check does. Check the
-            container and the GITHUB_TOKEN.
-```
-
-Thresholds and the `severity` label are starting points. Both windows assume
-the default `SCAN_INTERVAL=15m` (40m is roughly 2.5 scan intervals), so widen
-them if you lengthen `SCAN_INTERVAL`; adjust the `container` selector (or `job`
-/ `service`, depending on your log collector) to your deployment, and route by
-whatever labels your Alertmanager uses.
-
-In a container the scan always runs as PID 1 (see _Run modes_), so these rules
-apply to every containerized deployment as-is. If you instead run one-shot
-`trigger` scans on a bare host (cron), the output lands in your scheduler's
-stream rather than a `github-scout` container stream; point the selectors
-there, and alert on the job's exit code for scan failures.
-
-## Healthcheck
-
-A marker file at `/tmp/.healthy` is the scan loop's **liveness** signal. The
-daemon marks it healthy on boot (so a slow first scan on a large account never
-holds the container unhealthy past the `HEALTHCHECK` start-period) and
-refreshes it after every loop iteration, regardless of the scan's outcome. The
-`health` subcommand (`/github-scout health`) exits non-zero when the marker is
-missing or older than three scan intervals; this is the container's
-`HEALTHCHECK`, so no HTTP port or shell is needed on the distroless image.
-
-A wedged scan loop stops refreshing the marker and gets restarted by that
-staleness deadline, the only failure class a restart repairs. Scan _outcomes_
-(a bad token, a rate limit, a blind signal) never flip container health; they
-are reported on the log channel instead (`repo discovery failed`,
-`scan degraded`, and the absence of `scan complete`), which the bundled alert
-rules page on. The one-shot `trigger` never touches the marker; its contract
-is its exit code and its own stdout.
+A value github-scout cannot read falls back to its default, and a value out of range is moved to the nearest limit. [Configuration](docs/configuration.md) explains the token, the exclusions and the one-shot `trigger` command.
 
 ## Security
 
-- **Distroless, rootless, no shell.** Runs as `nonroot` on
-  `gcr.io/distroless/static` with no package manager or shell to exploit.
-- **No listening port.** github-scout runs no HTTP server; nothing to reach from
-  the network. Output is stdout; health is a file marker.
-- **Minimal writable state.** The only filesystem writes are the `/tmp/.healthy`
-  marker and two small state files (`/tmp/seen-runs.json` run dedup,
-  `/tmp/cond-cache.json` HTTP revalidation cache); no database, no persistent
-  volume. Under the hardened profile below, all three live on a
-  `noexec,nosuid,nodev` tmpfs.
-- **Minimal supply chain.** No non-`cplieger` runtime dependencies; the
-  `cplieger` `httpx` and `health` libraries provide retry/backoff and the health
-  probe. Response bodies are capped at 8 MB via `httpx`'s max-body limit; URL path segments
-  built from input are validated to reject traversal and injection characters.
-- **Secret hygiene.** The token is sent only to `api.github.com` and is never
-  written to logs.
+github-scout opens no port and runs no web server. It sends only read requests, and only to `api.github.com`, so give it a read-only token. The token travels only in the request header to GitHub and never appears in the log, which records only whether a token is set. Keep `.env` out of git.
 
-### Hardened deployment
+The image is distroless, with no shell, and runs as a non-root user. It writes only to `/tmp`, where it keeps a health marker and two small state files. [Security](docs/security.md) has the hardened compose settings and what the image contains.
 
-To lock the container down further, layer these directives onto the Quick
-start service:
+## Troubleshooting
 
-```yaml
-    read_only: true
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    tmpfs:
-      - "/tmp:size=16m,mode=1777,noexec,nosuid,nodev"
-```
+The healthcheck runs `/github-scout health`, which checks that the scan loop refreshed its marker file within the last three scan intervals, 45 minutes at the default. Unhealthy means the loop stopped, so restart the container. The container stays healthy through a failed scan, a rejected token or a rate limit. Those appear in the log, and the bundled alert rules fire on them.
 
-With `read_only: true`, the writable `/tmp` state above (the health marker and
-the two state files) needs the tmpfs; `size=16m` covers all three. Without
-`read_only`, no tmpfs is needed.
+- If `docker compose up` stops with `set GITHUB_OWNER` or `set GITHUB_TOKEN`, the `.env` file is missing that line or is not beside `compose.yaml`.
+- If the log shows `"msg":"repo discovery failed"`, GitHub rejected the token or could not be reached. Check that the token in `.env` has not expired.
+- If the log shows `"cause":"no_repos_visible"`, the token sees no repository owned by `GITHUB_OWNER`. Set it to the login of the account that created the token.
+- If every scan logs `code scanning listing failed` for the same private repository, that repository has no GitHub Advanced Security. Add its name to `CODE_SCANNING_EXCLUDE_REPOS`.
 
-## Limitations
+## Monitoring
 
-- **Dependabot alerts are out of scope.** Dependabot has its own alerting and
-  is intentionally left out; the collector is structured so more signal types
-  can be added later (see [CONTRIBUTING.md](CONTRIBUTING.md)).
-- **github.com only.** GitHub Enterprise Server would require making the API
-  base URL configurable.
-- **Re-emission on container recreate.** A recreate (not a plain restart) clears
-  the `/tmp` dedup file, so the next scan re-logs runs still inside the lookback
-  window once (see _Two emission models_ above).
+github-scout writes one JSON log line for each open pull request, issue, alert and finished run, plus a `scan complete` summary after each scan. The bundled dashboard reads those lines from Loki, and two Loki alert rules fire when scans go blind or stop. [Monitoring and alerts](docs/monitoring.md) lists the log fields, the dashboard and the rules.
 
-## Development
+## Documentation
 
-Requires Go (see `go.mod` for the pinned version). From a clone:
-
-```bash
-go build ./...                              # compile
-go test ./...                               # unit tests
-go test -race ./...                         # race detector
-go test ./internal/github -run=x -fuzz=FuzzDecodeRunsPage -fuzztime=30s  # fuzz the API decode
-golangci-lint run ./...                     # lint (config synced from cplieger/ci)
-```
-
-To run it locally against your account, export a token and use the `trigger`
-subcommand (one scan, then exit):
-
-```bash
-GITHUB_TOKEN=ghp_xxx GITHUB_OWNER=your-login LOG_LEVEL=debug go run . trigger
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture map, the extension
-point for new signal types, and the contribution workflow.
-
-## Dependencies
-
-All dependencies are updated automatically via
-[Renovate](https://github.com/renovatebot/renovate) and pinned by digest or
-version for reproducibility.
-
-| Dependency | Source |
-| --- | --- |
-| golang | [Go](https://hub.docker.com/_/golang) |
-| Distroless static | [Distroless](https://github.com/GoogleContainerTools/distroless) |
-| cplieger/httpx | [httpx](https://github.com/cplieger/httpx), retry/backoff client |
-| cplieger/health | [health](https://github.com/cplieger/health), file-marker probe |
-| cplieger/scheduler | [scheduler](https://github.com/cplieger/scheduler), poll loop, slot-file state |
-| cplieger/slogx | [slogx](https://github.com/cplieger/slogx), slog setup |
-| cplieger/envx | [envx](https://github.com/cplieger/envx), env-var getters |
-| cplieger/runesafe | [runesafe](https://github.com/cplieger/runesafe), untrusted-string sanitizer |
+- [Configuration](docs/configuration.md) covers the token permissions, the exclusions and one-shot scans.
+- [Monitoring and alerts](docs/monitoring.md) covers the log lines, the Grafana dashboard and the alert rules.
+- [Security](docs/security.md) covers the hardened compose settings and what the image contains.
+- [How github-scout works](docs/how-it-works.md) covers scanning, deduplication and GitHub API use.
 
 ## Credits
 
-An original tool building on the
-[GitHub REST API](https://docs.github.com/en/rest). The API-client design (auth
-headers, the API-version pin, page-count pagination) follows patterns from the
-MIT-licensed [githubexporter/github-exporter](https://github.com/githubexporter/github-exporter)
-and [xrstf/github_exporter](https://github.com/xrstf/github_exporter). No code
-was copied verbatim; see [NOTICE](NOTICE) for attribution.
+github-scout reads the [GitHub REST API](https://docs.github.com/en/rest). The way its API client authenticates, sets the API version and pages through results follows two Prometheus exporters for GitHub, [githubexporter/github-exporter](https://github.com/githubexporter/github-exporter) and [xrstf/github_exporter](https://github.com/xrstf/github_exporter). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) names each pattern.
 
 ## Contributing
 
-Issues and pull requests are welcome. github-scout is deliberately small and
-single-purpose, so please open an issue before starting anything larger than a
-bug fix. See [CONTRIBUTING.md](CONTRIBUTING.md) for the architecture map, local
-setup, testing conventions, and the step-by-step extension point for adding new
-signal types.
+Issues and pull requests are welcome. Please open an issue before anything larger than a bug fix, and see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 
