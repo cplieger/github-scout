@@ -116,7 +116,7 @@ github-scout reads the [GitHub REST API](https://docs.github.com/en/rest). The w
 
 ## Contributing
 
-Issues and pull requests are welcome. Please open an issue before anything larger than a bug fix, and see [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Disclaimer
 
