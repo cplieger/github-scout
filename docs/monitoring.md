@@ -119,13 +119,10 @@ groups:
         annotations:
           summary: "github-scout scans are degraded, so signal counts are unverified"
           description: >
-            github-scout logged repeated degraded scans in the last 40m. A
-            signal could not be read, so the dashboard counts, Code Scanning
-            Alerts above all, may read 0 because github-scout could not check,
-            not because nothing is there. The `scan degraded` log line carries
-            the cause, one of token_invalid, rate_limited, no_repos_visible,
-            code_scanning_blind, runs_blind or signal_blind, and the
-            failed_signals field.
+            github-scout logged repeated degraded scans in the last 40m.
+            Dashboard counts may read 0 because a signal could not be read.
+            Check the cause and failed_signals fields of the `scan degraded`
+            log line.
       - alert: GithubScoutScanStalled
         expr: |
           absent_over_time({container="github-scout"} |= `scan complete` [40m])
@@ -135,14 +132,15 @@ groups:
         annotations:
           summary: "github-scout has not completed a scan in 40m"
           description: >
-            No "scan complete" line from github-scout in 40m, against a scan
-            about every 15m by default. Repo discovery may be failing on a
-            revoked or expired token, or the scan loop may have stopped. Rule
-            out a stopped or renamed container and a log pipeline that stopped
-            shipping. Every dashboard panel goes stale and reads empty, and the
-            Scan Integrity tile cannot flag it because no scan ran. Check the
-            container and the GITHUB_TOKEN.
+            No `scan complete` line from github-scout in 40m, so every
+            dashboard panel is stale. Check that the container is running,
+            that its logs reach Loki, and that GITHUB_TOKEN is valid.
 ```
+
+Notes on each rule:
+
+- `GithubScoutScanDegraded` means a zero on the dashboard may not have been checked. The Code Scanning Alerts tile is the count most likely to read 0 this way. The `cause` field takes one of the values in the table under [Scan summary and integrity](#scan-summary-and-integrity).
+- `GithubScoutScanStalled` expects a scan about every 15m by default. Repo discovery may be failing on a revoked or expired token, or the scan loop may have stopped. A stopped or renamed container, or a log pipeline that stopped shipping, also fires it. The Scan Integrity tile cannot flag a stall, because no scan ran.
 
 Thresholds and the `severity` label are starting points. Both windows assume the default `SCAN_INTERVAL` of 15m, about 2.5 scan intervals, so widen them if you lengthen the interval. Change the `container` selector to the label your log collector sets, such as `job` or `service`, and route by whatever labels your Alertmanager uses.
 
