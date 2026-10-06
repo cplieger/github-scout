@@ -1831,86 +1831,6 @@
             }
           }
         }
-      },
-      "panel-50": {
-        "kind": "Panel",
-        "spec": {
-          "id": 50,
-          "title": "Failures by repository",
-          "description": "Failed, timed-out and never-started Actions runs per repository, reported in the selected time range, each run counted once. Every bar is red from 1 failed run, and a repository with many is worth a look for a flaky or broken workflow. After a restart github-scout reports the last `LOOKBACK_HOURS` again, so a range can include a run that started before it. An empty panel means CI was green everywhere.",
-          "links": [],
-          "data": {
-            "kind": "QueryGroup",
-            "spec": {
-              "queries": [
-                {
-                  "kind": "PanelQuery",
-                  "spec": {
-                    "query": {
-                      "kind": "DataQuery",
-                      "group": "loki",
-                      "version": "v0",
-                      "datasource": {
-                        "name": "${datasource}"
-                      },
-                      "spec": {
-                        "expr": "count by (repo) (count by (repo, run_id) (count_over_time({container=\"github-scout\"} |= `workflow run` | json msg=\"msg\", repo=\"repo\", run_id=\"run_id\", conclusion=\"conclusion\" | msg=`workflow run` | conclusion=~`failure|timed_out|startup_failure` [$__range])))",
-                        "legendFormat": "{{repo}}",
-                        "queryType": "instant"
-                      }
-                    },
-                    "refId": "A",
-                    "hidden": false
-                  }
-                }
-              ],
-              "transformations": [],
-              "queryOptions": {}
-            }
-          },
-          "vizConfig": {
-            "kind": "VizConfig",
-            "group": "bargauge",
-            "version": "",
-            "spec": {
-              "options": {
-                "displayMode": "basic",
-                "orientation": "horizontal",
-                "showUnfilled": true,
-                "valueMode": "color",
-                "reduceOptions": {
-                  "calcs": [
-                    "lastNotNull"
-                  ]
-                }
-              },
-              "fieldConfig": {
-                "defaults": {
-                  "unit": "short",
-                  "decimals": 0,
-                  "noValue": "No failed runs in this range",
-                  "thresholds": {
-                    "mode": "absolute",
-                    "steps": [
-                      {
-                        "value": null,
-                        "color": "green"
-                      },
-                      {
-                        "value": 1,
-                        "color": "red"
-                      }
-                    ]
-                  },
-                  "color": {
-                    "mode": "thresholds"
-                  }
-                },
-                "overrides": []
-              }
-            }
-          }
-        }
       }
     },
     "layout": {
@@ -2044,19 +1964,6 @@
                         "element": {
                           "kind": "ElementReference",
                           "name": "panel-30"
-                        }
-                      }
-                    },
-                    {
-                      "kind": "GridLayoutItem",
-                      "spec": {
-                        "x": 0,
-                        "y": 10,
-                        "width": 24,
-                        "height": 8,
-                        "element": {
-                          "kind": "ElementReference",
-                          "name": "panel-50"
                         }
                       }
                     }
