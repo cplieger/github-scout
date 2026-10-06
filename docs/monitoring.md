@@ -65,7 +65,7 @@ The dashboard needs Grafana 13.2 or newer and the container's log in Loki with a
 
 1. At a glance holds four count tiles, for open pull requests, open issues, code-scanning alerts and failed CI runs in the selected time range.
 2. Open work holds linked tables of the open pull requests, issues and code-scanning alerts from the latest scan.
-3. Recent CI failures holds a linked table of failed, timed-out and startup-failed runs in the selected time range, and a bar gauge of those failures per repository. Successful runs are left out.
+3. Recent CI failures holds a linked table of failed, timed-out and startup-failed runs in the selected time range. Successful runs are left out.
 4. Scout health holds two tiles. **Scout status** turns Stalled when no scan completed in the last hour. **Scan integrity** turns red when a scan logged an error, so a zero above it was not checked.
 
 Two controls shape what you see:
