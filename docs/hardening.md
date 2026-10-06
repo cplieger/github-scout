@@ -13,7 +13,7 @@ Because github-scout only reads, a read-only token is all it needs. [Configurati
 
 ## Hardened deployment
 
-To lock the container down further, pin the image by digest and add these settings to the quick start service:
+[Pin the image by digest](https://github.com/cplieger/docs/blob/main/docs/images.md#pinning-a-digest) and add these lines to the quick start service. [Hardening a compose file](https://github.com/cplieger/docs/blob/main/docs/hardening.md) explains each setting.
 
 ```yaml
     read_only: true
