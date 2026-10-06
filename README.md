@@ -61,7 +61,9 @@ services:
 
 4. Run `docker compose up -d`.
 5. Have your log collector [send the container's logs to Loki](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#the-smallest-stack-sends-notifications-only) with the label `container="github-scout"`, which every dashboard panel selects on.
-6. In Grafana, [import](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#importing-an-apps-dashboard) [`grafana-dashboard.json`](grafana-dashboard.json). It reads from your default Loki data source.
+6. In Grafana 13.2 or newer, [import](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#importing-an-apps-dashboard) [`grafana-dashboard.json`](grafana-dashboard.json). It reads from your default Loki data source.
+
+On Grafana 13.1 or older, take `grafana-dashboard.json` from release [v2.3.0](https://github.com/cplieger/github-scout/releases/tag/v2.3.0), the last one in the older dashboard format. That file gets no further changes, so you maintain it yourself.
 
 Run `docker logs github-scout`. You should see a line with `"msg":"scan complete"`. If you see `"msg":"repo discovery failed"` instead, GitHub rejected the token or could not be reached. Check the `GITHUB_TOKEN` line of `.env`.
 
@@ -101,7 +103,7 @@ The healthcheck runs `/github-scout health`, which checks that the scan loop ref
 
 ## Monitoring
 
-github-scout writes one JSON log line for each open pull request, issue, alert and finished run, plus a `scan complete` summary after each scan. Two Loki alert rules fire when scans go blind or stop. [Monitoring and alerts](docs/monitoring.md) lists the log fields, the dashboard and the rules.
+github-scout writes one JSON log line for each open pull request, issue, alert and finished run, plus a `scan complete` summary after each scan. The bundled dashboard needs Grafana 13.2 or newer and reads those lines from Loki, and two Loki alert rules fire when scans go blind or stop. [Monitoring and alerts](docs/monitoring.md) lists the log fields, the dashboard and the rules.
 
 ## Documentation
 

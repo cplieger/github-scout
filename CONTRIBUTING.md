@@ -18,6 +18,8 @@ A new signal touches nine places:
 8. A row in the log table of `docs/monitoring.md`, and the signal's name in its `failed_signals` list.
 9. The signal in the README's `## What it does` list and `## Monitoring` paragraph.
 
+Save a `grafana-dashboard.json` change made in the Grafana UI with Export, then Export as code, choosing the V2 Resource model.
+
 ## Releases
 
 Use a releasing type such as `fix:` for a commit that changes only `grafana-dashboard.json`. A non-releasing type makes the dashboard wait for the next [release](docs/monitoring.md#pinning-the-dashboard).
