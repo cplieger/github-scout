@@ -61,17 +61,17 @@ A single 401 beside successful reads only marks the scan degraded, because GitHu
 
 ## Grafana dashboard
 
-The dashboard needs the container's log in Loki with a `container` label that holds the container name, which the Alloy config in the [monitoring guide](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#the-smallest-stack-sends-notifications-only) sets. [Importing an app's dashboard](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#importing-an-apps-dashboard) shows how to load [`grafana-dashboard.json`](../grafana-dashboard.json). The dashboard reads from your default Loki data source and needs no plugin. Its rows follow the order you ask questions:
+The dashboard needs Grafana 13.2 or newer and the container's log in Loki with a `container` label that holds the container name, which the Alloy config in the [monitoring guide](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#the-smallest-stack-sends-notifications-only) sets. [Importing an app's dashboard](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#importing-an-apps-dashboard) shows how to load [`grafana-dashboard.json`](../grafana-dashboard.json). The dashboard reads from your default Loki data source and needs no plugin. Its rows follow the order you ask questions:
 
 1. At a glance holds four count tiles, for open pull requests, open issues, code-scanning alerts and failed CI runs in the selected time range.
 2. Open work holds linked tables of the open pull requests, issues and code-scanning alerts from the latest scan.
-3. Recent CI failures holds a linked table of failed, timed-out and startup-failed runs in the selected time range. Successful runs are left out.
-4. Scout health holds two tiles. **Scout Status** turns STALLED when no scan completed in the last hour. **Scan Integrity** turns red when a scan logged an error, so a zero above it was not checked.
+3. Recent CI failures holds a linked table of failed, timed-out and startup-failed runs in the selected time range, and a bar gauge of those failures per repository. Successful runs are left out.
+4. Scout health holds two tiles. **Scout status** turns Stalled when no scan completed in the last hour. **Scan integrity** turns red when a scan logged an error, so a zero above it was not checked.
 
 Two controls shape what you see:
 
 - The **Snapshot window** variable, under the dashboard's Settings then Variables, sets how far back the open-work tables and their tiles look for the latest scan. Keep it at least `SCAN_INTERVAL`. The default `30m` is twice the default scan interval. It does not change the failure panels.
-- The time picker changes only the failed-run tile and table. Keep it within `LOOKBACK_HOURS`, 72 hours by default, which is the furthest back each scan reads.
+- The time picker changes only the failure panels. Keep it within `LOOKBACK_HOURS`, 72 hours by default, which is the furthest back each scan reads. Each restart reports that whole window again, so a range can include a run that started before it.
 
 Every panel uses one Loki selector, for example:
 
@@ -81,25 +81,52 @@ Every panel uses one Loki selector, for example:
 
 ## Pinning the dashboard
 
-The dashboard is versioned with the app. The JSON at release `<tag>` matches the log fields that image writes, and its `uid` stays the same, so a new import updates the dashboard in place. Pin it the way you pin the image, to the tag of the image you run. Each release publishes it in two forms:
+The dashboard is versioned with the app. The JSON at release `<tag>` matches the log fields that image writes. The file sets `metadata.name` to `github-scout`, which Grafana uses as the dashboard UID. Because the name stays the same from release to release, importing a newer copy over the existing one, or a file provider reading the newer file, updates it in place. Pin it the way you pin the image, to the tag of the image you run. Each release publishes it in two forms:
 
-- The release asset `https://github.com/cplieger/github-scout/releases/download/<tag>/grafana-dashboard.json`, with `grafana-dashboard.json.sha256` beside it. It works as grafana-operator `spec.url`, as the Grafana Helm chart's `dashboards.<provider>.<name>.url`, or as a Terraform `http` data source.
-- The OCI artifact `ghcr.io/cplieger/github-scout/dashboard:<tag>`, for grafana-operator `spec.oci`.
+- The release asset `https://github.com/cplieger/github-scout/releases/download/<tag>/grafana-dashboard.json`, with `grafana-dashboard.json.sha256` beside it. It works as the Grafana Helm chart's `dashboards.<provider>.<name>.url` with `curlOptions: "-sLf"`, because the release URL redirects, or as a Terraform `http` data source. Renovate can track the URL with its `github-releases` datasource.
+- The OCI artifact `ghcr.io/cplieger/github-scout/dashboard:<tag>`, with the artifact type `application/vnd.grafana.dashboard.v2+json`.
 
-Renovate can track either form, the URL with its `github-releases` datasource and the OCI tag with its `docker` datasource.
+On Grafana 13.1 or older, use the `grafana-dashboard.json` of release [v2.3.0](https://github.com/cplieger/github-scout/releases/tag/v2.3.0), the last one in the older dashboard format. That file gets no further changes, so you maintain it yourself.
+
+The file is a Grafana dashboard resource with `apiVersion: dashboard.grafana.app/v2`, which grafana-operator's `GrafanaDashboard` does not accept. Load it with a `GrafanaManifest`, as grafana-operator's [dashboards v2 example](https://grafana.github.io/grafana-operator/docs/examples/manifests/dashboards-v2/) shows. A `GrafanaManifest` takes the dashboard inline and has no URL or OCI source. Copy the `spec` object of the release's `grafana-dashboard.json` in place of the comment below, and copy it again when you move to a new tag.
 
 ```yaml
 apiVersion: grafana.integreatly.org/v1beta1
-kind: GrafanaDashboard
+kind: GrafanaManifest
 metadata:
   name: github-scout
 spec:
   instanceSelector:
     matchLabels:
       dashboards: grafana
-  oci:
-    reference: ghcr.io/cplieger/github-scout/dashboard:<tag>
-    path: grafana-dashboard.json
+  template:
+    apiVersion: dashboard.grafana.app/v2
+    kind: Dashboard
+    metadata:
+      name: github-scout
+    spec:
+      # The spec object of grafana-dashboard.json, unchanged.
+```
+
+For a Grafana instance the operator does not manage, also set `namespace` under `template.metadata` to that instance's namespace. You can leave it out when the `Grafana` resource sets `tenantNamespace` in `spec.external`.
+
+If a `GrafanaDashboard` already loads this dashboard from an older tag, keep it on that tag, including in any Renovate rule that bumps it. On grafana-operator v5.25.0, a `GrafanaDashboard` that receives a file in this format deletes the dashboard it manages. The issue is [grafana/grafana-operator#2955](https://github.com/grafana/grafana-operator/issues/2955). Replace it with the `GrafanaManifest` above.
+
+With Terraform, the Grafana provider's [`grafana_apps_dashboard_dashboard_v2`](https://registry.terraform.io/providers/grafana/grafana/latest/docs/resources/apps_dashboard_dashboard_v2) resource takes the file's `spec` object as JSON, and the dashboard's name as `uid`:
+
+```hcl
+data "http" "github_scout_dashboard" {
+  url = "https://github.com/cplieger/github-scout/releases/download/<tag>/grafana-dashboard.json"
+}
+
+resource "grafana_apps_dashboard_dashboard_v2" "github_scout" {
+  metadata {
+    uid = "github-scout"
+  }
+  spec {
+    json = jsonencode(jsondecode(data.http.github_scout_dashboard.response_body).spec)
+  }
+}
 ```
 
 ## Alerting
@@ -139,8 +166,8 @@ groups:
 
 Notes on each rule:
 
-- `GithubScoutScanDegraded` means a zero on the dashboard may not have been checked. The Code Scanning Alerts tile is the count most likely to read 0 this way. The `cause` field takes one of the values in the table under [Scan summary and integrity](#scan-summary-and-integrity).
-- `GithubScoutScanStalled` expects a scan about every 15m by default. Repo discovery may be failing on a revoked or expired token, or the scan loop may have stopped. A stopped or renamed container, or a log pipeline that stopped shipping, also fires it. The Scan Integrity tile cannot flag a stall, because no scan ran.
+- `GithubScoutScanDegraded` means a zero on the dashboard may not have been checked. The Code scanning alerts tile is the count most likely to read 0 this way. The `cause` field takes one of the values in the table under [Scan summary and integrity](#scan-summary-and-integrity).
+- `GithubScoutScanStalled` expects a scan about every 15m by default. Repo discovery may be failing on a revoked or expired token, or the scan loop may have stopped. A stopped or renamed container, or a log pipeline that stopped shipping, also fires it. The Scan integrity tile cannot flag a stall, because no scan ran.
 
 Thresholds and the `severity` label are starting points. Both windows assume the default `SCAN_INTERVAL` of 15m, about 2.5 scan intervals, so widen them if you lengthen the interval. Change the `container` selector to the label your log collector sets, such as `job` or `service`, and route by whatever labels your Alertmanager uses.
 
