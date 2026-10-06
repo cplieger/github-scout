@@ -61,7 +61,7 @@ A single 401 beside successful reads only marks the scan degraded, because GitHu
 
 ## Grafana dashboard
 
-Ship the container's logs to Loki with a `container` label that holds the container name, then import [`grafana-dashboard.json`](../grafana-dashboard.json) or drop it into a file-based dashboard provider. With Grafana Alloy's [`loki.source.docker`](https://grafana.com/docs/alloy/latest/reference/components/loki/loki.source.docker/), that label comes from a relabel rule that copies `__meta_docker_container_name` without its leading `/`. The dashboard reads from your default Loki data source and needs no plugin. Its rows follow the order you ask questions:
+The dashboard needs the container's log in Loki with a `container` label that holds the container name, which the Alloy config in the [monitoring guide](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#the-smallest-stack-sends-notifications-only) sets. [Importing an app's dashboard](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#importing-an-apps-dashboard) shows how to load [`grafana-dashboard.json`](../grafana-dashboard.json). The dashboard reads from your default Loki data source and needs no plugin. Its rows follow the order you ask questions:
 
 1. At a glance holds four count tiles, for open pull requests, open issues, code-scanning alerts and failed CI runs in the selected time range.
 2. Open work holds linked tables of the open pull requests, issues and code-scanning alerts from the latest scan.
@@ -104,7 +104,7 @@ spec:
 
 ## Alerting
 
-github-scout has no metrics endpoint, so its state is in its logs. Ship the container's logs to Loki as above and evaluate these rules with [Loki's ruler](https://grafana.com/docs/loki/latest/alert/). Firing alerts go through your Alertmanager like any Prometheus alert. The first rule catches scans that ran but went blind. The second fires when no scan completes at all.
+github-scout has no metrics endpoint, so its state is in its logs. These rules are for Loki's ruler. Save the block below as a file in Loki's rules folder, as [Loading an app's alert rules](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#loading-an-apps-alert-rules) shows. The first rule catches scans that ran but went blind. The second fires when no scan completes at all.
 
 ```yaml
 groups:

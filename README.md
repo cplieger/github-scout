@@ -19,9 +19,9 @@ github-scout shows you what is waiting for you across all your repositories, in 
 
 ## Who it is for
 
-github-scout is built for people with many GitHub repositories, private ones included, who already run Grafana and Loki. It checks each repository every 15 minutes. It covers up to 500 repositories of your own github.com account, not organization repositories or Dependabot alerts.
+github-scout is built for people with many GitHub repositories, private ones included. It checks each repository every 15 minutes. It covers up to 500 repositories of your own github.com account, not organization repositories or Dependabot alerts.
 
-You need Grafana, Loki, a log collector such as Grafana Alloy, and a read-only GitHub personal access token.
+github-scout reports through its log, so its dashboard and alerts come from your Grafana, Loki and Alertmanager, which the [monitoring guide](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#the-smallest-stack-sends-notifications-only) sets up. You also need a read-only GitHub personal access token.
 
 Other tools suit other needs:
 
@@ -60,8 +60,8 @@ services:
    ```
 
 4. Run `docker compose up -d`.
-5. Have your log collector send the container's logs to Loki with the label `container="github-scout"`, which every dashboard panel selects on.
-6. In Grafana, import [`grafana-dashboard.json`](grafana-dashboard.json). It reads from your default Loki data source.
+5. Have your log collector [send the container's logs to Loki](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#the-smallest-stack-sends-notifications-only) with the label `container="github-scout"`, which every dashboard panel selects on.
+6. In Grafana, [import](https://github.com/cplieger/docs/blob/main/docs/monitoring.md#importing-an-apps-dashboard) [`grafana-dashboard.json`](grafana-dashboard.json). It reads from your default Loki data source.
 
 Run `docker logs github-scout`. You should see a line with `"msg":"scan complete"`. If you see `"msg":"repo discovery failed"` instead, GitHub rejected the token or could not be reached. Check the `GITHUB_TOKEN` line of `.env`.
 
@@ -101,7 +101,7 @@ The healthcheck runs `/github-scout health`, which checks that the scan loop ref
 
 ## Monitoring
 
-github-scout writes one JSON log line for each open pull request, issue, alert and finished run, plus a `scan complete` summary after each scan. The bundled dashboard reads those lines from Loki, and two Loki alert rules fire when scans go blind or stop. [Monitoring and alerts](docs/monitoring.md) lists the log fields, the dashboard and the rules.
+github-scout writes one JSON log line for each open pull request, issue, alert and finished run, plus a `scan complete` summary after each scan. Two Loki alert rules fire when scans go blind or stop. [Monitoring and alerts](docs/monitoring.md) lists the log fields, the dashboard and the rules.
 
 ## Documentation
 
