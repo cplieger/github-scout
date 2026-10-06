@@ -73,7 +73,7 @@ func TestLoadParsesValues(t *testing.T) {
 }
 
 // TestScanIntervalSentinelsFallBackToDefault pins the no-external-mode
-// contract: the fleet's external-scheduling sentinels (off / disabled / 0)
+// contract: the shared external-scheduling sentinels (off / disabled / 0)
 // are not valid values for this app — its stdout is the product, so scans
 // never run outside the daemon — and they get the standard invalid-input
 // treatment: exactly one warning, default cadence. No zero ever escapes
