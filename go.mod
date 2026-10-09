@@ -3,12 +3,12 @@ module github.com/cplieger/github-scout
 go 1.27.2
 
 require (
-	github.com/cplieger/envx/v2 v2.0.3
-	github.com/cplieger/health v1.8.0
-	github.com/cplieger/httpx/v5 v5.0.3
-	github.com/cplieger/runesafe/v2 v2.1.0
-	github.com/cplieger/scheduler/v4 v4.2.1
-	github.com/cplieger/slogx v1.6.5
+	github.com/cplieger/envx/v2 v2.0.7
+	github.com/cplieger/health v1.8.2
+	github.com/cplieger/httpx/v5 v5.0.5
+	github.com/cplieger/runesafe/v2 v2.1.1
+	github.com/cplieger/scheduler/v4 v4.2.3
+	github.com/cplieger/slogx v1.6.7
 )
 
-require github.com/cplieger/pathinside/v2 v2.0.1 // indirect
+require github.com/cplieger/pathinside/v2 v2.0.3 // indirect
