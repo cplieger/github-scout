@@ -21,16 +21,16 @@ import (
 
 // Defaults for environment-backed fields.
 const (
-	// DefaultScanInterval stays within GitHub's authenticated request budget.
-	DefaultScanInterval = 15 * time.Minute
-	// DefaultLookbackHours retains failures across a weekend.
-	DefaultLookbackHours = 72
-	// DefaultPRExclude removes Renovate PR noise.
-	DefaultPRExclude = "-author:app/renovate"
-	// DefaultIssueExclude removes Renovate and generated issue noise.
-	DefaultIssueExclude = "-author:app/renovate -label:renovate -label:auto-generated"
-	// DefaultCodeScanningExcludeForks excludes inherited upstream alerts.
-	DefaultCodeScanningExcludeForks = true
+	// defaultScanInterval stays within GitHub's authenticated request budget.
+	defaultScanInterval = 15 * time.Minute
+	// defaultLookbackHours retains failures across a weekend.
+	defaultLookbackHours = 72
+	// defaultPRExclude removes Renovate PR noise.
+	defaultPRExclude = "-author:app/renovate"
+	// defaultIssueExclude removes Renovate and generated issue noise.
+	defaultIssueExclude = "-author:app/renovate -label:renovate -label:auto-generated"
+	// defaultCodeScanningExcludeForks excludes inherited upstream alerts.
+	defaultCodeScanningExcludeForks = true
 	// maxScanInterval prevents a cadence too slow to be actionable.
 	maxScanInterval = 365 * 24 * time.Hour
 	// minScanInterval prevents quota exhaustion.
@@ -78,7 +78,7 @@ func Load() (Config, []Warning) {
 	}
 	scanInterval, scanWarns := ScanInterval()
 	warns = append(warns, scanWarns...)
-	lookback, lookbackWarns := clampedInt("LOOKBACK_HOURS", DefaultLookbackHours, 1, maxLookbackHours)
+	lookback, lookbackWarns := clampedInt("LOOKBACK_HOURS", defaultLookbackHours, 1, maxLookbackHours)
 	warns = append(warns, lookbackWarns...)
 
 	return Config{
@@ -86,12 +86,12 @@ func Load() (Config, []Warning) {
 		Owner:                    strings.TrimSpace(os.Getenv("GITHUB_OWNER")),
 		ExcludeRepos:             parseExcludes(os.Getenv("EXCLUDE_REPOS")),
 		CodeScanningExcludeRepos: parseExcludes(os.Getenv("CODE_SCANNING_EXCLUDE_REPOS")),
-		PRExclude:                cmp.Or(envx.String("PR_EXCLUDE_QUERY"), DefaultPRExclude),
-		IssueExclude:             cmp.Or(envx.String("ISSUE_EXCLUDE_QUERY"), DefaultIssueExclude),
+		PRExclude:                cmp.Or(envx.String("PR_EXCLUDE_QUERY"), defaultPRExclude),
+		IssueExclude:             cmp.Or(envx.String("ISSUE_EXCLUDE_QUERY"), defaultIssueExclude),
 		ScanInterval:             scanInterval,
 		Lookback:                 time.Duration(lookback) * time.Hour,
 		LogLevel:                 lvl,
-		CodeScanningExcludeForks: envx.Bool("CODE_SCANNING_EXCLUDE_FORKS", DefaultCodeScanningExcludeForks),
+		CodeScanningExcludeForks: envx.Bool("CODE_SCANNING_EXCLUDE_FORKS", defaultCodeScanningExcludeForks),
 	}, warns
 }
 
@@ -105,13 +105,13 @@ func ScanInterval() (time.Duration, []Warning) {
 
 // parseScanInterval falls back to the default for invalid or external modes.
 func parseScanInterval(raw string) (time.Duration, []Warning) {
-	s := scheduler.ParseInterval(raw, DefaultScanInterval,
+	s := scheduler.ParseInterval(raw, defaultScanInterval,
 		scheduler.WithBounds(minScanInterval, maxScanInterval),
 		scheduler.WithName("SCAN_INTERVAL"))
 	if s.Mode == scheduler.ModeExternal {
-		return DefaultScanInterval, []Warning{{
+		return defaultScanInterval, []Warning{{
 			Msg:   "invalid SCAN_INTERVAL, using default",
-			Attrs: []slog.Attr{slog.String("value", raw), slog.String("default", DefaultScanInterval.String())},
+			Attrs: []slog.Attr{slog.String("value", raw), slog.String("default", defaultScanInterval.String())},
 		}}
 	}
 	return s.Interval, nil
