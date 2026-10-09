@@ -20,10 +20,8 @@ var (
 
 // Repo is a GitHub repository discovered for an owner.
 type Repo struct {
-	Owner    string `json:"owner"`
-	Name     string `json:"name"`
-	Private  bool   `json:"private"`
-	Archived bool   `json:"archived"`
+	Owner string `json:"owner"`
+	Name  string `json:"name"`
 	// Fork alerts describe inherited upstream code; other signals remain in scope.
 	Fork bool `json:"fork"`
 }

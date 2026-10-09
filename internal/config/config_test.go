@@ -20,7 +20,7 @@ func TestLoadDefaults(t *testing.T) {
 	cfg := loadCfg()
 
 	// Expected values are written out rather than read back from the
-	// constants they check: an assertion against DefaultScanInterval moves
+	// constants they check: an assertion against defaultScanInterval moves
 	// with any edit to it and so pins nothing. 15m and 72h are the cadence
 	// and window the compose contract and the bundled dashboard assume.
 	if cfg.ScanInterval != 15*time.Minute {
@@ -384,12 +384,12 @@ func TestCodeScanningExcludeForks(t *testing.T) {
 		raw  string
 		want bool
 	}{
-		{desc: "unset defaults to exclude", set: false, want: DefaultCodeScanningExcludeForks},
-		{desc: "empty is treated as unset", set: true, raw: "", want: DefaultCodeScanningExcludeForks},
+		{desc: "unset defaults to exclude", set: false, want: defaultCodeScanningExcludeForks},
+		{desc: "empty is treated as unset", set: true, raw: "", want: defaultCodeScanningExcludeForks},
 		{desc: "false includes forks", set: true, raw: "false", want: false},
 		{desc: "true excludes forks", set: true, raw: "true", want: true},
 		{desc: "envx accepts 0", set: true, raw: "0", want: false},
-		{desc: "unparseable falls back to the default", set: true, raw: "ture", want: DefaultCodeScanningExcludeForks},
+		{desc: "unparseable falls back to the default", set: true, raw: "ture", want: defaultCodeScanningExcludeForks},
 	} {
 		t.Run(tc.desc, func(t *testing.T) {
 			if tc.set {
@@ -401,7 +401,7 @@ func TestCodeScanningExcludeForks(t *testing.T) {
 			}
 		})
 	}
-	if !DefaultCodeScanningExcludeForks {
-		t.Error("DefaultCodeScanningExcludeForks = false, want true: a fork's alerts are the upstream project's, so the safe default is to skip them")
+	if !defaultCodeScanningExcludeForks {
+		t.Error("defaultCodeScanningExcludeForks = false, want true: a fork's alerts are the upstream project's, so the safe default is to skip them")
 	}
 }

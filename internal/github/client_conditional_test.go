@@ -259,8 +259,8 @@ func TestConditional_codeScanning404StillMapsToNoCodeScanning(t *testing.T) {
 	}
 }
 
-// TestConditional_500IsRetried pins the transientStatus wrapper: the
-// conditional door retries a plain 500 exactly as the GetBytes door does
+// TestConditional_500IsRetried pins the transient mark on conditional 5xx:
+// the conditional door retries a plain 500 exactly as the GetBytes door does
 // (DoConditional's own classification would treat only 502/503/504 as
 // transient), so the scan's one health-flipping call keeps its retries.
 func TestConditional_500IsRetried(t *testing.T) {
