@@ -10,7 +10,7 @@ import (
 
 	"github.com/cplieger/github-scout/internal/forge"
 	"github.com/cplieger/github-scout/internal/runstate"
-	"github.com/cplieger/runesafe/v2"
+	"github.com/cplieger/runesafe/v3"
 )
 
 func stamp(t time.Time) string { return t.UTC().Format(time.RFC3339) }
