@@ -59,6 +59,7 @@ const (
 	dropExcludedItem
 	dropSecuritySkipped
 	dropForkWorkflows
+	dropTokenUnsupported
 	dropFailed
 	dropCut
 	dropNoHead
@@ -89,7 +90,7 @@ const (
 // reasonClass gives each reason exactly one class.
 var reasonClass = [numReasons]class{
 	dropArchived: classExcluded, dropExcludedRepo: classExcluded, dropExcludedItem: classExcluded,
-	dropSecuritySkipped: classExcluded, dropForkWorkflows: classExcluded,
+	dropSecuritySkipped: classExcluded, dropForkWorkflows: classExcluded, dropTokenUnsupported: classExcluded,
 	dropFailed: classPartial, dropCut: classPartial, dropNoHead: classPartial,
 	dropUnlisted: classPartial, dropUnresolved: classPartial, dropUnwritable: classPartial, dropNotDurable: classPartial,
 	dropStopped: classPartial, dropRefused: classPartial,

@@ -9,7 +9,9 @@ import (
 // githubTokenPermissions is the read-only permission set of a fine-grained
 // GitHub token that every read of a default scan needs, by GitHub's table:
 // https://docs.github.com/en/rest/authentication/permissions-required-for-fine-grained-personal-access-tokens
-var githubTokenPermissions = []string{"Actions", "Commit statuses", "Pull requests", "Issues", "Code scanning alerts"}
+// Contents is the one the table does not name: without it GitHub refused the
+// repository listing's default branch of every private repository, measured.
+var githubTokenPermissions = []string{"Actions", "Contents", "Commit statuses", "Pull requests", "Issues", "Code scanning alerts"}
 
 func TestDocs_every_github_token_instruction_names_every_permission_a_scan_needs(t *testing.T) {
 	for _, path := range []string{"README.md", "docs/configuration.md", "config.example.yaml"} {

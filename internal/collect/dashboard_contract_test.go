@@ -580,7 +580,7 @@ func countReads(f string) []string {
 	switch {
 	case strings.HasPrefix(f, "open_age_") || strings.HasPrefix(f, "idle_"):
 		return []string{"open_prs_read", "open_issues_read"}
-	case f == "failing_checks_prs" || f == "checks_unread":
+	case f == "failing_checks_prs" || f == "checks_unread" || f == "checks_unsupported_for_token":
 		return []string{"pr_checks_read"}
 	case strings.HasSuffix(f, "_prs"):
 		return []string{"open_prs_read"}
@@ -1432,7 +1432,7 @@ func TestDashboard_maps_every_value_the_code_logs(t *testing.T) {
 		causes = append(causes, diagnoses[i].cause)
 	}
 	var checks []string
-	for _, s := range []forge.CheckState{forge.CheckPassing, forge.CheckFailing, forge.CheckPending, forge.CheckNeutral, forge.CheckNone, forge.CheckUnknown} {
+	for _, s := range []forge.CheckState{forge.CheckPassing, forge.CheckFailing, forge.CheckPending, forge.CheckNeutral, forge.CheckNone, forge.CheckUnknown, forge.CheckUnreadable} {
 		checks = append(checks, string(s))
 	}
 	readColumns, causeColumns, checkColumns := 0, 0, 0
@@ -1492,7 +1492,7 @@ func TestDashboard_reads_every_signal_state_and_coverage_field(t *testing.T) {
 			want = append(want, familyNames[f]+"_read")
 		}
 	}
-	want = append(want, "owners_empty", "unsupported_signals")
+	want = append(want, "owners_empty", "unsupported_signals", "checks_unsupported_for_token")
 	for _, key := range want {
 		if !strings.Contains(text, `="`+key+`"`) {
 			t.Errorf("no panel reads %s", key)

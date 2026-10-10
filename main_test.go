@@ -412,6 +412,71 @@ func TestScan_a_github_403_on_a_run_listing_sends_no_further_request(t *testing.
 	}
 }
 
+// TestScan_a_pull_request_whose_checks_github_refuses_the_token_keeps_the_list_whole
+// drives the real adapter against a GitHub fake whose search answers every
+// pull request whole and refuses one private repository's check rollup, as
+// GitHub answers a fine-grained token, over two scans of one process.
+func TestScan_a_pull_request_whose_checks_github_refuses_the_token_keeps_the_list_whole(t *testing.T) {
+	rec := capture.Default(t)
+	w := world("acme")
+	private := w.Repos[0]
+	private.Name, private.Private, private.Alerts, private.Runs = "infra", true, nil, nil
+	t0 := time.Now().UTC().Truncate(time.Second)
+	private.PRs = []forgeconntest.Item{{Number: 9, Title: "Infra change", Author: "someone", HeadSHA: "def", Created: t0.Add(-time.Hour), Updated: t0, ChecksForbidden: true}}
+	w.Repos = append(w.Repos, private)
+	gh := forgeconntest.New(forgeconntest.GitHub, w)
+	t.Cleanup(gh.Close)
+	cfg := config.Config{Lookback: 72 * time.Hour, Connections: []config.Connection{gh.Connection("hub")}}
+	c := newCollector(t.Context(), &cfg, slog.Default(), testStore(t))
+	t.Cleanup(c.Close)
+	for scan := 1; scan <= 2; scan++ {
+		mark := len(rec.Records())
+		if got := c.Scan(t.Context()); got != collect.Complete {
+			t.Fatalf("scan %d = %s, want complete; messages %v", scan, got, rec.Messages())
+		}
+		checks := map[string]string{}
+		complete := map[string]string{}
+		for _, r := range rec.Records()[mark:] {
+			attrs := map[string]string{}
+			r.Attrs(func(a slog.Attr) bool {
+				attrs[a.Key] = a.Value.String()
+				return true
+			})
+			switch r.Message {
+			case "open pull request":
+				checks[attrs["number"]] = attrs["checks"]
+			case "scan complete":
+				complete = attrs
+			}
+		}
+		if len(checks) != 2 || checks["3"] != "passing" || checks["9"] != "unreadable" {
+			t.Errorf("scan %d open pull request checks = %v, want #3 passing and #9 unreadable", scan, checks)
+		}
+		for k, want := range map[string]string{
+			"open_prs_read": "complete", "pr_checks_read": "complete", "degraded": "false", "open_prs": "2",
+			"failing_checks_prs": "0", "checks_unread": "0", "checks_unsupported_for_token": "1",
+		} {
+			if complete[k] != want {
+				t.Errorf("scan %d scan complete %s = %q, want %q; line %v", scan, k, complete[k], want, complete)
+			}
+		}
+	}
+	if n := rec.CountExact("scan degraded"); n != 0 {
+		t.Errorf("scan degraded lines = %d, want 0: a check rollup GitHub refuses the token degrades nothing", n)
+	}
+	if n := rec.CountExact("pull request checks not available with this token"); n != 1 {
+		t.Errorf("checks warnings over two scans = %d, want 1 per process", n)
+	}
+	for _, r := range rec.Records() {
+		if r.Message == "pull request checks not available with this token" && r.Level != slog.LevelWarn {
+			t.Errorf("checks warning level = %s, want WARN", r.Level)
+		}
+	}
+	if u := gh.Unhandled(); len(u) != 0 {
+		t.Errorf("unserved requests: %v", u)
+	}
+}
+
 // TestScan_a_run_in_a_state_forgeapi_cannot_map_is_counted_and_never_judged
 // drives the real adapter against a GitHub fake whose second run carries a
 // conclusion no table knows: the run is counted, never delivered, and its

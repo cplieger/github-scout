@@ -131,6 +131,9 @@ type PullRequest struct {
 	Labels  []string
 	Number  int
 	Draft   bool
+	// ChecksRefused reports a row whose checks the forge refused to the
+	// token, which a checks read answers CheckUnreadable without a request.
+	ChecksRefused bool
 }
 
 // SetRepoHandle records the adapter's opaque address for pr's repository,
@@ -254,14 +257,16 @@ type CheckState string
 
 // The CheckState members. CheckNone is a whole read that found no check;
 // CheckUnknown is a fold that could not give a verdict, as a check it left
-// out may be failing.
+// out may be failing; CheckUnreadable is checks the forge refuses this token,
+// as GitHub refuses check runs to a fine-grained token, which no retry reads.
 const (
-	CheckPassing CheckState = "passing"
-	CheckFailing CheckState = "failing"
-	CheckPending CheckState = "pending"
-	CheckNeutral CheckState = "neutral"
-	CheckNone    CheckState = "none"
-	CheckUnknown CheckState = "unknown"
+	CheckPassing    CheckState = "passing"
+	CheckFailing    CheckState = "failing"
+	CheckPending    CheckState = "pending"
+	CheckNeutral    CheckState = "neutral"
+	CheckNone       CheckState = "none"
+	CheckUnknown    CheckState = "unknown"
+	CheckUnreadable CheckState = "unreadable"
 )
 
 // CheckResult is the folded check verdict of one commit and whether its read

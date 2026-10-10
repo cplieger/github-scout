@@ -142,6 +142,12 @@ type apiAlert struct {
 	Number int64 `json:"number"`
 }
 
+// maxAlertPages bounds one repository's code-scanning read at 10,000 open
+// alerts, a safety ceiling rather than a working limit: the read returns
+// every row it holds, about 300 bytes each, and each page costs one request
+// of the connection's quota (see ghquota.Meter.Admit).
+const maxAlertPages = 100
+
 // route is one listing this package reads and what its answers mean.
 type route struct {
 	what string
@@ -157,7 +163,7 @@ var (
 	// codeScanning answers 404 on its first page for a repository with no
 	// analyses
 	// (https://docs.github.com/en/rest/code-scanning/code-scanning#list-code-scanning-alerts-for-a-repository).
-	codeScanning = route{what: "code-scanning alerts", maxPages: 5, firstPageNotFound: forge.EndNone}
+	codeScanning = route{what: "code-scanning alerts", maxPages: maxAlertPages, firstPageNotFound: forge.EndNone}
 	// workflows documents no 404.
 	workflows = route{what: "workflows", maxPages: 3}
 )

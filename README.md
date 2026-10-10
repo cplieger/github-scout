@@ -61,7 +61,7 @@ services:
       - "./data:/data"
 ```
 
-1. Create a read-only token on each forge, with the [permissions](docs/configuration.md#token-permissions) for that forge. On GitHub, use a classic token with the `repo` scope, which also reads pull request checks. A fine-grained token with read-only Actions, Commit statuses, Pull requests, Issues and Code scanning alerts works too, but GitHub gives it no permission for check runs.
+1. Create a read-only token on each forge, with the [permissions](docs/configuration.md#token-permissions) for that forge. On GitHub, use a classic token with the `repo` scope, which also reads pull request checks. A fine-grained token with read-only Actions, Contents, Commit statuses, Pull requests, Issues and Code scanning alerts works too, but GitHub gives it no permission for check runs, so the checks of pull requests on private repositories are not available with it.
 2. In the folder that holds `compose.yaml`, create a file named `.env` with one line per token, such as `GITHUB_TOKEN=github_pat_your_token`. If your user on the host is not uid 1000, also add `PUID=` and `PGID=` lines with your numbers from `id -u` and `id -g`.
 3. Save [`config.example.yaml`](config.example.yaml) beside `compose.yaml`, then run `mkdir -p config && cp config.example.yaml config/config.yaml`. In `config/config.yaml`, set each connection's `url` and `owners`, and delete the connections you do not use.
 4. Add each token variable the config names to the `environment:` block of `compose.yaml`.
@@ -118,7 +118,7 @@ Pull requests, issues and CI runs are read on every forge. Code-scanning alerts 
 - On Gitea and Forgejo, the run listing has no time filter. forgeapi ends it at the first page whose runs were all created more than a minute before the listing's start, so a long run history costs one or two requests a scan. Gitea releases before 28 send no run creation time, so their runs are not read and the log says so once per scan.
 - Run durations need a start time from the forge. GitHub, Gitea and Forgejo send one. GitLab's pipeline list does not, so GitLab workflows never appear among the slowest workflows.
 - A GitLab owner that is a user and not a group has no owner-wide pull request or issue list. forge-scout then reads each of that user's projects, which costs two requests per project per scan.
-- A pull request's checks are read on GitHub and GitLab, one request per open pull request. Gitea and Forgejo name no head commit in the cross-repository list, so their pull requests show no checks.
+- A pull request's checks are read on GitHub and GitLab, one request per open pull request. GitHub refuses a fine-grained token the checks of a pull request on a private repository, and the dashboard shows them as Not available with this token. Gitea and Forgejo name no head commit in the cross-repository list, so their pull requests show no checks.
 
 ## Security
 

@@ -306,9 +306,12 @@ func earliest(oldest *time.Time, t time.Time) {
 }
 
 // CommitChecks folds the checks of pr's head commit, CheckNone where a whole
-// read found none. The caller asks only for a pull request whose HeadSHA is
-// set.
+// read found none and CheckUnreadable where the forge refuses them to the
+// token. The caller asks only for a pull request whose HeadSHA is set.
 func (c *Client) CommitChecks(ctx context.Context, pr *forge.PullRequest) (forge.CheckResult, error) {
+	if pr.ChecksRefused {
+		return unreadable, nil
+	}
 	ref, ok := pr.RepoHandle().(forgeapi.RepoRef)
 	if !ok {
 		return forge.CheckResult{}, errors.New("pull request carries no repository address")
@@ -323,6 +326,9 @@ func (c *Client) CommitChecks(ctx context.Context, pr *forge.PullRequest) (forge
 	if cc.Partial != nil && cc.Partial.Reason == forgeapi.PartialRateLimited {
 		return forge.CheckResult{}, c.rateLimitError()
 	}
+	if refused(cc.Partial) {
+		return unreadable, nil
+	}
 	res := forge.CheckResult{State: checkStateOf(cc.State), End: forge.EndWhole}
 	switch {
 	case cc.Partial != nil:
@@ -332,6 +338,13 @@ func (c *Client) CommitChecks(ctx context.Context, pr *forge.PullRequest) (forge
 	}
 	return res, nil
 }
+
+// unreadable is the answer for checks the forge refuses the token.
+var unreadable = forge.CheckResult{State: forge.CheckUnreadable, End: forge.EndWhole}
+
+// refused reports forgeapi's marker for part of an item the forge refused the
+// credential while answering the rest.
+func refused(p *forgeapi.Partial) bool { return p != nil && p.Reason == forgeapi.PartialForbidden }
 
 // undated reports the refusal of a bounded run page whose rows carry no
 // creation time, a departure forgeapi declares for Gitea before v28 alone.
@@ -498,6 +511,7 @@ func (c *Client) prsOf(rows []forgeapi.PullRequest) ([]forge.PullRequest, error)
 			CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt, Repo: r.Repo.DisplayPath,
 			Ref: refOf(r.Ref.Sigil, r.Ref.Number), Title: r.Title, Author: r.Author, URL: r.WebURL,
 			HeadSHA: r.HeadSHA, Labels: labelNames(r.Labels), Number: r.Ref.Number, Draft: r.Draft,
+			ChecksRefused: refused(r.Partial),
 		}
 		pr.SetRepoHandle(r.Repo)
 		out = append(out, pr)
