@@ -1,0 +1,8 @@
+# Config for the image smoke test: one connection to a host that does not
+# resolve, so the first scan fails and the loop-liveness marker still reports
+# healthy.
+connections:
+  - name: smoke
+    url: https://forge.invalid
+    token: ${FORGE_SCOUT_SMOKE_TOKEN}
+    owners: [smoke-test]

@@ -1,13 +1,23 @@
-# Example compose for github-scout. See the README for all configuration options and hardening.
+# Example compose for forge-scout. See the README for all configuration options and hardening.
 services:
-  github-scout:
+  forge-scout:
     image: ghcr.io/cplieger/github-scout:latest
-    container_name: github-scout
+    container_name: forge-scout
     restart: unless-stopped
+    # Must own the ./data host folder. If .env sets PUID and PGID, those numbers are used.
+    user: "${PUID:-1000}:${PGID:-1000}"
 
     environment:
-      # Before the first start, create a .env file beside this file with two lines,
-      # GITHUB_OWNER=<your GitHub login> and GITHUB_TOKEN=<a read-only token>. The README lists the token permissions.
-      GITHUB_OWNER: "${GITHUB_OWNER:?set GITHUB_OWNER - the login whose repos to scan}"
-      GITHUB_TOKEN: "${GITHUB_TOKEN:?set GITHUB_TOKEN - see README for token scopes}"
-      SCAN_INTERVAL: "15m"  # time between scans, such as 15m or 1h
+      # Every token the config file names as ${...}. Put each in a .env file beside this file.
+      # The github connection in config.example.yaml reads this token. Delete this line when you remove that connection.
+      GITHUB_TOKEN: "${GITHUB_TOKEN:-}"
+      # The forgejo connection in config.example.yaml reads this token. Delete this line when you remove that connection.
+      FORGEJO_TOKEN: "${FORGEJO_TOKEN:-}"
+
+    volumes:
+      # Run "mkdir -p config && cp config.example.yaml config/config.yaml", then edit
+      # config/config.yaml before the first start.
+      - "./config:/config:ro"
+      # The run state. Run "mkdir -p data && sudo chown 1000:1000 data" before the first start.
+      # If .env sets PUID and PGID, use those numbers.
+      - "./data:/data"

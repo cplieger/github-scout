@@ -1,9 +1,9 @@
-# Kiro skill artifacts (app-review, judgement, steering-maintenance)
+# Local tooling artifacts
 **/.app-review/
 **/.judgement/
 **/.steering-maintenance/
 
-# Local env file for compose interpolation (keeps GITHUB_TOKEN/GITHUB_OWNER out of git)
+# Local env file for compose interpolation (keeps tokens out of git)
 .env
 *.env
 
@@ -11,5 +11,5 @@
 go.work
 go.work.sum
 
-# Agent workflow scratch
+# Local scratch
 .agents/

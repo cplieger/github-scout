@@ -1,0 +1,67 @@
+# forge-scout configuration. Beside your compose.yaml, run
+# "mkdir -p config && cp config.example.yaml config/config.yaml".
+# The container reads the copy at /config/config.yaml.
+#
+# A value written as ${NAME} is read from the container's environment, for
+# names that end in _TOKEN or start with FORGE_SCOUT_. Each token must be one
+# such reference and nothing else: a token written into this file stops the
+# start.
+
+# Time between scans, from 1m to 171h. Each connection's scan stops at twice
+# this, and the connections are read at the same time.
+scan_interval: 15m
+
+# How far back every scan reads CI runs, from 1h to 720h. It must cover two
+# scan_interval, each up to 10% late, plus one scan at its limit of twice
+# scan_interval, so at least 4.2 times scan_interval: each scan's read then
+# reaches back past the scan before it. A re-run is seen while its run is
+# younger than lookback. Runs created while forge-scout was stopped for longer
+# than this are not read.
+lookback: 72h
+
+# debug or info. warn and error are refused: every line the dashboard reads,
+# scan complete included, is logged at info.
+log_level: info
+
+connections:
+  # One entry per forge instance. name is the label every log line carries
+  # as connection: lowercase letters, digits, - and _, up to 32 characters.
+  # Two entries for one instance need tokens of two different accounts.
+  - name: github
+    url: https://github.com
+    # A classic token with the repo scope, which also reads pull request
+    # checks. A fine-grained token with read-only Actions, Commit statuses,
+    # Pull requests, Issues and Code scanning alerts works too, but GitHub
+    # gives it no permission for check runs. docs/configuration.md lists the
+    # permissions for every forge.
+    token: ${GITHUB_TOKEN}
+    # The users, organizations or GitLab groups whose repositories are scanned.
+    owners: [your-login]
+    # Full owner/name paths left out of every signal.
+    exclude_repos: []
+    # Open pull requests and issues by these authors, or carrying any of these
+    # labels, are left out. Matching ignores case.
+    exclude_authors: [renovate, "renovate[bot]"]
+    exclude_labels: [renovate]
+    # Logins counted as bots in the From column, beside any login ending in [bot].
+    bot_authors: []
+    # Code-scanning alerts, read on GitHub only. Forks are skipped by default,
+    # because a fork reports the alerts of the code it copied. Private
+    # repositories are skipped by default too: set include_private to true
+    # when the account has GitHub Advanced Security on private repositories.
+    security:
+      enabled: true
+      skip_forks: true
+      include_private: false
+      skip_repos: []
+
+  # A self-hosted instance on your network. The product (Gitea or Forgejo,
+  # GitLab, GitHub Enterprise Server) is detected; nothing names it here.
+  - name: forgejo
+    url: https://git.example.lan
+    token: ${FORGEJO_TOKEN}
+    owners: [your-login, your-org]
+    # Allow an instance whose address is private or on loopback.
+    private_addresses: true
+    # Allow an http:// url. Leave false for https.
+    allow_plaintext: false
