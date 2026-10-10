@@ -1845,7 +1845,7 @@ func (c *cancelling) RunsSince(ctx context.Context, repo forge.Repo, since time.
 	return c.fakeConn.RunsSince(ctx, repo, since)
 }
 
-func (c *cancelling) CommitChecks(ctx context.Context, _ *forge.PullRequest) (forge.CheckResult, error) {
+func (*cancelling) CommitChecks(ctx context.Context, _ *forge.PullRequest) (forge.CheckResult, error) {
 	return forge.CheckResult{}, ctx.Err()
 }
 

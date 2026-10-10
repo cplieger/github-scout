@@ -357,7 +357,7 @@ func (c *Collector) intervalAttr() slog.Attr {
 	return slog.Int64("scan_interval_s", int64(c.interval/time.Second))
 }
 
-func (c *Collector) emitDegraded(sc *scan, r *connResult) {
+func (*Collector) emitDegraded(sc *scan, r *connResult) {
 	cause, reason := r.ledger.diagnosis()
 	sc.out.log(r.log, slog.LevelError, "scan degraded", slog.Int64("scan_id", sc.id),
 		slog.String("cause", cause), slog.String("reason", reason),

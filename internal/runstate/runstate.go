@@ -94,7 +94,7 @@ type Store struct {
 // It answers ErrInUse while another Store, in this process or another, holds
 // dir. Call Close to release it.
 func Open(dir string) (*Store, error) {
-	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_RDWR|os.O_CREATE, 0o600)
+	f, err := os.OpenFile(filepath.Join(dir, lockName), os.O_RDONLY|os.O_CREATE, 0o600)
 	if err != nil {
 		return nil, fmt.Errorf("open run state lock: %w", err)
 	}

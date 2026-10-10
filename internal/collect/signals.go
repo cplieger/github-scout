@@ -72,7 +72,7 @@ type slowRow struct {
 // repositories whose runs this scan listed: the store alone cannot say what
 // is failing now in a repository it could not list. A verdict of a workflow
 // a whole GitHub workflow listing proves gone is failing nowhere.
-func (c *Collector) derive(sc *scan, r *connResult) {
+func (*Collector) derive(sc *scan, r *connResult) {
 	runs := &r.ledger.fam[famRuns]
 	if !runs.begun || runs.unsupported {
 		return

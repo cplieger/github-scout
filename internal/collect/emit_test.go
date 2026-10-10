@@ -38,10 +38,9 @@ var sharedValue = map[string]string{
 func huge(name string) string { return name + strings.Repeat(`"\`, 150<<10) }
 
 // oversize sets every forge-filled string field of the row ptr points at to
-// a huge value, and returns the qualified names it set.
-func oversize(ptr any) []string {
+// a huge value.
+func oversize(ptr any) {
 	v := reflect.ValueOf(ptr).Elem()
-	var set []string
 	for i := range v.NumField() {
 		f, field := v.Type().Field(i), v.Field(i)
 		name := v.Type().Name() + "." + f.Name
@@ -54,12 +53,8 @@ func oversize(ptr any) []string {
 			field.SetString(value)
 		case reflect.TypeFor[[]string]():
 			field.Set(reflect.ValueOf([]string{value, value}))
-		default:
-			continue
 		}
-		set = append(set, name)
 	}
-	return set
 }
 
 func TestOversize_exemptions_name_real_fields(t *testing.T) {

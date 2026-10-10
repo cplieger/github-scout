@@ -355,7 +355,7 @@ func (c *Collector) discover(ctx context.Context, sc *scan, cs *connState, r *co
 // the first scan the set is what it is and at DEBUG while it stays so: the
 // read is complete, as there is nothing to read, but a misspelt owner that
 // names another account looks just like it.
-func (c *Collector) logEmptyOwners(cs *connState, r *connResult) {
+func (*Collector) logEmptyOwners(cs *connState, r *connResult) {
 	empty := strings.Join(r.ownersEmpty, ",")
 	if empty != "" {
 		level := slog.LevelWarn
@@ -367,7 +367,7 @@ func (c *Collector) logEmptyOwners(cs *connState, r *connResult) {
 	cs.lastEmpty = empty
 }
 
-func (c *Collector) discoveryFailure(ctx context.Context, r *connResult, err error) error {
+func (*Collector) discoveryFailure(ctx context.Context, r *connResult, err error) error {
 	if r.stopped(err, famRepos) || isShutdown(ctx) {
 		return errStopped
 	}
@@ -487,7 +487,7 @@ func (c *Collector) ownerIssues(ctx context.Context, cs *connState, r *connResul
 // owner or of one project of the per-repository fallback (scope names which):
 // the owner's snapshot is incomplete, so the family is blind, never a
 // smaller snapshot.
-func (c *Collector) snapshotFailure(ctx context.Context, r *connResult, f family, err error, scope, name string) error {
+func (*Collector) snapshotFailure(ctx context.Context, r *connResult, f family, err error, scope, name string) error {
 	if r.stopped(err, f) || isShutdown(ctx) {
 		return errStopped
 	}
@@ -651,7 +651,7 @@ type workflowListing struct {
 // listedRuns records one repository's listing of the window. A run in a
 // state forgeapi could not map is reported at WARN the first scan it is seen,
 // at DEBUG while it stays.
-func (c *Collector) listedRuns(sc *scan, cs *connState, r *connResult, repo forge.Repo, list *forge.RunList) {
+func (*Collector) listedRuns(sc *scan, cs *connState, r *connResult, repo forge.Repo, list *forge.RunList) {
 	l := runListing{cover: sc.cutoff, pending: list.OldestPending, repo: repo, runs: list.Rows}
 	if r.ledger.record(famRuns, list.End, nil) == outcomePartial {
 		l.cut, l.cover = true, list.Oldest
@@ -712,7 +712,7 @@ func unstorable(list *forge.RunList) error {
 // no listing of the scan holding a dated row, as one without the run
 // signals: an empty listing dates nothing. The undated listings, by path,
 // beside a dated row are failed reads.
-func (c *Collector) settleUndated(r *connResult, undated []string, dated bool) {
+func (*Collector) settleUndated(r *connResult, undated []string, dated bool) {
 	switch {
 	case len(undated) == 0:
 	case !dated:
@@ -786,7 +786,7 @@ func (c *Collector) readGitHub(ctx context.Context, _ *scan, cs *connState, r *c
 	return nil
 }
 
-func (c *Collector) readAlerts(ctx context.Context, cs *connState, r *connResult, repo forge.Repo) error {
+func (*Collector) readAlerts(ctx context.Context, cs *connState, r *connResult, repo forge.Repo) error {
 	sec := &cs.cfg.Security
 	if !sec.Enabled {
 		return nil
@@ -811,7 +811,7 @@ func (c *Collector) readAlerts(ctx context.Context, cs *connState, r *connResult
 	return nil
 }
 
-func (c *Collector) readWorkflows(ctx context.Context, cs *connState, r *connResult, repo forge.Repo) error {
+func (*Collector) readWorkflows(ctx context.Context, cs *connState, r *connResult, repo forge.Repo) error {
 	if repo.Fork {
 		r.ledger.drop(famWorkflows, dropForkWorkflows, 1)
 		return nil
@@ -875,7 +875,7 @@ func (r *connResult) checksFailed(pr *forge.PullRequest, err error) {
 
 // readChecks folds each open pull request's head checks, on a product whose
 // pull-request rows name a head and a pull-request snapshot it publishes.
-func (c *Collector) readChecks(ctx context.Context, _ *scan, cs *connState, r *connResult) error {
+func (*Collector) readChecks(ctx context.Context, _ *scan, cs *connState, r *connResult) error {
 	if r.ledger.fam[famChecks].unsupported || r.ledger.withheld(famPRs) {
 		return nil
 	}
