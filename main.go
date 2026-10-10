@@ -1,214 +1,209 @@
-// Package main implements github-scout: scans a GitHub owner's repositories
-// on a schedule and emits open PRs/issues, code-scanning alerts, and Actions
-// runs as structured log lines for Loki.
+// Package main is forge-scout: on a schedule it scans the repositories of the
+// configured owners on GitHub, GitLab, Gitea and Forgejo instances and emits
+// open pull requests, open issues, CI runs and GitHub code-scanning alerts as
+// structured JSON log lines.
 //
-// main.go is a pure composition root: config -> *http.Client -> github.Client
-// -> collect.Collector -> health.Marker. All logic lives in internal/*.
+// main is the composition root: config, the forge connections, the run state
+// store, the collector and the health marker. All logic lives in internal/*.
 package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
-	"runtime/debug"
 	"syscall"
 	"time"
 
+	"github.com/cplieger/forgeapi/github"
 	"github.com/cplieger/github-scout/internal/collect"
 	"github.com/cplieger/github-scout/internal/config"
-	"github.com/cplieger/github-scout/internal/github"
-	"github.com/cplieger/github-scout/internal/urlsafe"
+	"github.com/cplieger/github-scout/internal/forge"
+	"github.com/cplieger/github-scout/internal/forgeconn"
+	"github.com/cplieger/github-scout/internal/ghquota"
+	"github.com/cplieger/github-scout/internal/githubrest"
+	"github.com/cplieger/github-scout/internal/runstate"
 	"github.com/cplieger/health"
-	"github.com/cplieger/httpx/v5"
 	"github.com/cplieger/scheduler/v4"
 	"github.com/cplieger/slogx"
 )
 
-// seenStatePath persists the run dedup set across process lifetimes via a
-// flock'd merge-on-save slot (scheduler.SlotFile), so a concurrent writer
-// pair cannot lose entries to a last-writer-wins overwrite. Best-effort:
-// lives on /tmp, so a container recreate re-emits the lookback window once.
-const seenStatePath = "/tmp/seen-runs.json"
-
-// condCachePath persists the GitHub client's conditional-request cache
-// (per-URL ETag/Last-Modified validators plus the validated item subset),
-// so an unchanged resource revalidates as a free 304. Same best-effort
-// /tmp contract as seenStatePath.
-const condCachePath = "/tmp/cond-cache.json"
+// stateDir is the volume the run state lives on.
+const stateDir = "/data"
 
 func main() {
-	// JSON handler installed before anything logs, so config.Load warnings
-	// are JSON too; setupLogging sets the real level once config is read.
-	logLevel = slogx.Setup(slogx.Options{Format: slogx.JSON, Output: os.Stdout})
+	// The JSON handler is installed before anything logs, so config warnings
+	// are JSON too; the configured level is set after they are emitted.
+	logLevel := slogx.Setup(slogx.Options{Format: slogx.JSON, Output: os.Stdout})
+	base := scopeDefault()
 
-	// Distroless image has no shell, so subcommands are the CLI surface.
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "health":
-			// The daemon reports configuration warnings; the frequent probe stays silent.
-			interval, _ := config.ScanInterval()
-			lease := health.Lease{Interval: interval, Cycles: 3}
-			health.RunProbe(health.DefaultPath, health.WithMaxAge(lease.Duration()))
+			health.RunProbe(health.DefaultPath, health.WithMaxAge(healthLease(config.ScanIntervalFromFile(config.Path())).Duration()))
 		case "trigger":
-			runTrigger()
+			os.Exit(runTrigger(logLevel, base, stateDir))
 		default:
-			slog.Error("unknown subcommand", "arg", os.Args[1],
-				"valid", "health, trigger, or no argument for daemon")
+			slog.Error("unknown subcommand", "arg", os.Args[1], "valid", "health, trigger, or no argument for daemon")
 			os.Exit(2)
 		}
-		// health.RunProbe and runTrigger both terminate via os.Exit; this
-		// guard is a fallback since health is a separately versioned dep.
 		os.Exit(0)
 	}
+	os.Exit(runDaemon(logLevel, base, stateDir))
+}
 
-	cfg, valid := loadConfig()
-	if !valid {
-		os.Exit(1)
+// healthLease is how stale the marker may grow: three intervals, plus one
+// scan at its limit between two refreshes.
+func healthLease(interval time.Duration) health.Lease {
+	return health.Lease{Interval: interval, Cycles: 3, Timeout: config.ScanLimit(interval), Attempts: 1}
+}
+
+// scopeDefault scopes slog.Default as a line about no single connection, for
+// the libraries that log through it, and returns the unscoped logger.
+func scopeDefault() (base *slog.Logger) {
+	base = slog.Default()
+	slog.SetDefault(collect.Scope(base, forge.ProductUnknown, ""))
+	return base
+}
+
+// Every function below takes base, the logger with neither forge nor
+// connection, and scopes each line it logs with collect.Scope.
+
+func runDaemon(logLevel *slog.LevelVar, base *slog.Logger, dir string) int {
+	cfg, ok := loadConfig(logLevel, base, config.Path())
+	if !ok {
+		return 1
 	}
-
+	store, ok := openStore(base, dir)
+	if !ok {
+		return 1
+	}
+	defer store.Close()
+	log := collect.Scope(base, forge.ProductUnknown, "")
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Marker is pure loop liveness, refreshed after every iteration
-	// regardless of scan outcome; a bad token or rate limit is reported on
-	// the log channel instead, since a restart cannot fix either.
+	// The marker is loop liveness only: a bad token or a blind signal is
+	// reported on the log channel, since a restart fixes neither.
 	marker := health.NewMarker(health.DefaultPath)
 	marker.Set(false)
 	defer marker.Cleanup()
 
-	collector, httpClient := buildCollector(&cfg)
-	defer httpClient.CloseIdleConnections()
+	collector := newCollector(ctx, &cfg, base, store)
+	defer collector.Close()
 	marker.Set(true)
-	slog.Info("scheduled mode", "interval", cfg.ScanInterval, "jitter", "±10%")
-	runScheduled(ctx, cfg.ScanInterval, collector, marker)
-
-	slog.Info("shutdown complete", "cause", context.Cause(ctx))
+	log.Info("scheduled mode", "interval", cfg.ScanInterval.String(), "jitter", fmt.Sprintf("±%d%%", config.ScanJitterPercent))
+	scheduler.RunLoop(ctx, func(ctx context.Context) {
+		collector.Scan(ctx)
+		marker.Set(true)
+	}, scheduler.LoopOptions{Interval: cfg.ScanInterval, FireOnStart: true, Jitter: config.ScanJitter})
+	log.Info("shutdown complete", "cause", context.Cause(ctx))
+	return 0
 }
 
-// runTrigger executes a single scan and exits. os.Exit lives here, free of
-// pending defers; doTrigger holds the defers and returns the exit code.
-func runTrigger() {
-	os.Exit(doTrigger())
-}
-
-// doTrigger loads config, runs one scan, and returns the process exit code.
-// It deliberately never touches the /tmp/.healthy marker, which belongs to
-// the scheduled daemon's loop-liveness probe.
-func doTrigger() int {
-	cfg, valid := loadConfig()
-	if !valid {
+// runTrigger runs one scan and returns the exit code. It never touches the
+// health marker, which belongs to the daemon's loop.
+func runTrigger(logLevel *slog.LevelVar, base *slog.Logger, dir string) int {
+	cfg, ok := loadConfig(logLevel, base, config.Path())
+	if !ok {
 		return 1
 	}
-
+	store, ok := openStore(base, dir)
+	if !ok {
+		return 1
+	}
+	defer store.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	collector := newCollector(ctx, &cfg, base, store)
+	defer collector.Close()
+	return trigger(ctx, collector, base)
+}
 
-	collector, httpClient := buildCollector(&cfg)
-	defer httpClient.CloseIdleConnections()
-
-	ok := runScan(ctx, collector)
-	slog.Info("trigger scan complete", "healthy", ok)
-	if !ok {
+// trigger runs the one-shot scan and returns its exit code: 0 only for a
+// scan that read every signal of every connection whole.
+func trigger(ctx context.Context, collector *collect.Collector, base *slog.Logger) int {
+	log := collect.Scope(base, forge.ProductUnknown, "")
+	outcome := collector.Scan(ctx)
+	if outcome == collect.Interrupted {
+		log.Warn("trigger scan interrupted", "cause", context.Cause(ctx))
+		return 1
+	}
+	log.Info("trigger scan complete", "outcome", outcome.String())
+	if outcome != collect.Complete {
 		return 1
 	}
 	return 0
 }
 
-// loadConfig loads config, emits its warnings before the parsed LOG_LEVEL
-// applies (so an error-level setting cannot hide the warning that explains
-// it), installs the log level, logs the active config, then validates it.
-// Returns the config and whether it is valid; on invalid config it logs the
-// diagnostic and returns false, leaving the abort to the caller.
-func loadConfig() (config.Config, bool) {
-	cfg, warns := config.Load()
+func loadConfig(logLevel *slog.LevelVar, base *slog.Logger, path string) (config.Config, bool) {
+	log := collect.Scope(base, forge.ProductUnknown, "")
+	cfg, warns, err := config.Load(path)
 	for _, w := range warns {
-		slog.LogAttrs(context.Background(), slog.LevelWarn, w.Msg, w.Attrs...)
+		log.LogAttrs(context.Background(), slog.LevelWarn, w.Msg, w.Attrs...)
 	}
-	setupLogging(cfg.LogLevel)
-	logConfig(&cfg)
-	if !cfg.Valid() {
-		slog.Error("invalid configuration; need GITHUB_OWNER and GITHUB_TOKEN",
-			"owner_set", cfg.Owner != "", "token_set", cfg.Token != "",
-			"owner_safe", cfg.Owner == "" || urlsafe.IsSafeURLSegment(cfg.Owner))
+	if err != nil {
+		log.Error("invalid configuration", "path", path, "error", err)
 		return cfg, false
 	}
+	logLevel.Set(cfg.LogLevel)
+	for i := range cfg.Connections {
+		c := &cfg.Connections[i]
+		collect.Scope(base, forge.ProductUnknown, c.Name).Info("connection configured",
+			"url", c.URL, "owners", len(c.Owners), "token_set", c.Token != "")
+	}
+	log.Info("configuration loaded", "path", path, "connections", len(cfg.Connections),
+		"scan_interval", cfg.ScanInterval.String(), "lookback", cfg.Lookback.String())
 	return cfg, true
 }
 
-// buildCollector wires config -> *http.Client -> github.Client ->
-// collect.Collector. The caller owns CloseIdleConnections on the returned client.
-func buildCollector(cfg *config.Config) (*collect.Collector, *http.Client) {
-	httpClient := httpx.NewClient(30 * time.Second)
-	gh := github.NewClient(github.Options{
-		HTTP:          httpClient,
-		Token:         cfg.Token,
-		Logger:        slog.Default(),
-		CondCachePath: condCachePath,
-	})
-	collector := collect.New(&collect.Deps{
-		Client:                   gh,
-		Logger:                   slog.Default(),
-		Owner:                    cfg.Owner,
-		Lookback:                 cfg.Lookback,
-		Exclude:                  cfg.ExcludeRepos,
-		CodeScanningExclude:      cfg.CodeScanningExcludeRepos,
-		CodeScanningExcludeForks: cfg.CodeScanningExcludeForks,
-		PRExclude:                cfg.PRExclude,
-		IssueExclude:             cfg.IssueExclude,
-		StatePath:                seenStatePath,
-	})
-	return collector, httpClient
+// openStore takes the run state directory for this process. A directory
+// another forge-scout process holds, or one it cannot lock, is refused before
+// any forge is read.
+func openStore(base *slog.Logger, dir string) (*runstate.Store, bool) {
+	store, err := runstate.Open(dir)
+	if err == nil {
+		return store, true
+	}
+	log := collect.Scope(base, forge.ProductUnknown, "")
+	if errors.Is(err, runstate.ErrInUse) {
+		log.Error(runstate.ErrInUse.Error(), "path", dir)
+	} else {
+		log.Error("run state directory unusable", "path", dir, "error", err)
+	}
+	return nil, false
 }
 
-// runScan executes one scan, recovering from a panic so a single bad
-// cycle can't crash the long-lived poller. Returns the health flag.
-func runScan(ctx context.Context, collector *collect.Collector) (healthy bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			slog.Error("scan panicked", "panic", r, "stack", string(debug.Stack()))
-			healthy = false
+func newCollector(ctx context.Context, cfg *config.Config, base *slog.Logger, store *runstate.Store) *collect.Collector {
+	return collect.New(ctx, &collect.Deps{
+		Open:         opener(base),
+		Store:        store,
+		Logger:       base,
+		Connections:  cfg.Connections,
+		Lookback:     cfg.Lookback,
+		ScanInterval: cfg.ScanInterval,
+		ScanLimit:    config.ScanLimit(cfg.ScanInterval),
+	})
+}
+
+// opener opens one forge connection, and on GitHub its REST client for the
+// routes forgeapi does not model, the two sharing one quota meter.
+func opener(base *slog.Logger) collect.Opener {
+	return func(ctx context.Context, c *config.Connection) (collect.Conn, collect.GitHubReader, error) {
+		meter := ghquota.New(nil)
+		conn, err := forgeconn.Open(ctx, c, base.With("connection", c.Name), meter)
+		if err != nil {
+			return nil, nil, err
 		}
-	}()
-	return collector.Scan(ctx)
-}
-
-// runScheduled scans on each tick of a ScanInterval timer with ±10% jitter
-// (avoids a synchronized hammer on the GitHub API across restarts) until ctx
-// is cancelled. FireOnStart runs the first scan immediately on boot.
-//
-// The marker refresh is unconditional: it asserts the loop completed an
-// iteration, not that the scan found the data healthy. A failing scan
-// refreshes it too — the failure is already on the log channel.
-func runScheduled(ctx context.Context, interval time.Duration, collector *collect.Collector, marker *health.Marker) {
-	scheduler.RunLoop(ctx, func(ctx context.Context) {
-		runScan(ctx, collector)
-		marker.Set(true)
-	}, scheduler.LoopOptions{Interval: interval, FireOnStart: true, Jitter: 0.10})
-}
-
-// logLevel backs the JSON handler installed at the start of main(). JSON
-// (not the shared text handler) because workflow names/branches contain
-// spaces and slashes that JSON encodes unambiguously where logfmt quoting
-// is fragile.
-var logLevel *slog.LevelVar
-
-// setupLogging sets the configured level on logLevel. Called once by
-// loadConfig after LOG_LEVEL is read; until then the handler runs at the
-// LevelVar default (Info).
-func setupLogging(level slog.Level) {
-	logLevel.Set(level)
-}
-
-// logConfig logs the active configuration at startup. The token is never
-// logged — only whether one is present.
-func logConfig(cfg *config.Config) {
-	slog.Info("configuration loaded",
-		"owner", cfg.Owner,
-		"token_set", cfg.Token != "",
-		"scan_interval", cfg.ScanInterval.String(),
-		"lookback", cfg.Lookback,
-		"excluded_repos", len(cfg.ExcludeRepos),
-		"code_scanning_excluded_repos", len(cfg.CodeScanningExcludeRepos))
+		if conn.Product() != forge.ProductGitHub {
+			return conn, nil, nil
+		}
+		api := githubrest.APIBase(c.URL, c.APIURL)
+		logger := collect.Scope(base, forge.ProductGitHub, c.Name)
+		gh := githubrest.New(githubrest.HTTPClient(api, c.PrivateAddresses, c.AllowPlaintext, logger), api, c.Token, github.APIVersion,
+			meter, logger)
+		return conn, gh, nil
+	}
 }

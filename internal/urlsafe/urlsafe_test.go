@@ -14,7 +14,7 @@ func TestIsSafeURLSegment(t *testing.T) {
 	}{
 		// Safe: ordinary owner/repo path segments.
 		{"plain login", "cplieger", true},
-		{"hyphenated repo", "github-scout", true},
+		{"hyphenated repo", "forge-scout", true},
 		{"single char", "a", true},
 		{"underscore", "repo_name", true},
 		{"dotted tag-like", "v1.2.3", true},
@@ -65,7 +65,7 @@ func TestIsSafeURLSegment(t *testing.T) {
 // killing mutants that would admit a percent-encoded byte.
 func FuzzIsSafeURLSegment(f *testing.F) {
 	for _, seed := range []string{
-		"cplieger", "github-scout", "v1.2.3", "repo_name",
+		"cplieger", "forge-scout", "v1.2.3", "repo_name",
 		"", ".", "..", "a/b", "a%2e", "a b", "a|b", "../etc",
 	} {
 		f.Add(seed)
