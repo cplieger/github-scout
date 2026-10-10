@@ -93,7 +93,6 @@ type apiRepo struct {
 	Owner struct {
 		Login string `json:"login"`
 	} `json:"owner"`
-	Private  bool `json:"private"`
 	Archived bool `json:"archived"`
 	Fork     bool `json:"fork"`
 }
@@ -126,11 +125,9 @@ func (c *Client) ListRepos(ctx context.Context, owner string) ([]ghsignal.Repo, 
 				continue
 			}
 			repos = append(repos, ghsignal.Repo{
-				Owner:    r.Owner.Login,
-				Name:     r.Name,
-				Private:  r.Private,
-				Archived: r.Archived,
-				Fork:     r.Fork,
+				Owner: r.Owner.Login,
+				Name:  r.Name,
+				Fork:  r.Fork,
 			})
 		}
 		if len(pageRepos) < perPage {
@@ -276,8 +273,7 @@ func (c *Client) getJSONConditional(ctx context.Context, reqURL string, out any)
 // contract). A non-transient 5xx is wrapped transient so this door retries
 // every 5xx exactly as GetBytes does — DoConditional's CheckHTTPStatus
 // mapping classifies only 502/503/504 transient, and the repo listing is
-// the scan's one health-flipping call, so it must not lose retries in the
-// adoption.
+// the scan's one health-flipping call, so it must not lose retries.
 func (c *Client) conditionalGet(ctx context.Context, reqURL string, v httpx.Validators) (httpx.ConditionalResult, error) {
 	opts := make([]httpx.DoOption, 0, len(c.retryOpts)+2)
 	for _, o := range c.retryOpts {
@@ -292,24 +288,11 @@ func (c *Client) conditionalGet(ctx context.Context, reqURL string, v httpx.Vali
 		c.setHeaders(req)
 		res, err := httpx.DoConditional(c.http, req, v, bodyCap)
 		if hse, ok := errors.AsType[*httpx.HTTPStatusError](err); ok && hse.IsServerError() && !hse.IsTransient() {
-			err = transientStatusError{err}
+			err = httpx.MarkTransient(err)
 		}
 		return res, err
 	}, opts...)
 }
-
-// transientStatusError marks a non-transient 5xx from the conditional door
-// retryable, aligning it with the GetBytes door's all-5xx retry policy (the
-// per-door divergence is deliberate in httpx; this client wants one policy
-// across both of its paths).
-type transientStatusError struct{ error }
-
-// IsTransient implements httpx.Transient.
-func (transientStatusError) IsTransient() bool { return true }
-
-// Unwrap exposes the wrapped status error to errors.As chains
-// (codeScanningNotFound, mapStatusError).
-func (e transientStatusError) Unwrap() error { return e.error }
 
 // mapStatusError maps only 401 and 429 to systemic domain errors; 403 remains per-repo.
 func mapStatusError(err error) error {
@@ -449,9 +432,8 @@ func (c *Client) search(ctx context.Context, base, owner, exclude string) ([]api
 	}
 	// archived:false excludes archived repos from the cross-repo Search API,
 	// which (unlike ListRepos) includes them by default. This aligns the
-	// snapshot path with the repo-loop path (ListRepos filters r.Archived) and
-	// with ghsignal.Repo's contract that archived repos are skipped: an archived
-	// repo's open PRs/issues are not actionable.
+	// snapshot path with the repo-loop path (ListRepos filters r.Archived): an
+	// archived repo's open PRs/issues are not actionable.
 	q := base + " user:" + owner + " archived:false"
 	if exclude = strings.TrimSpace(exclude); exclude != "" {
 		q += " " + exclude
