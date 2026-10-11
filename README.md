@@ -124,7 +124,7 @@ Pull requests, issues and CI runs are read on every forge. Code-scanning alerts 
 
 forge-scout opens no port and runs no web server. It sends only read requests, and only to the forges you configure, so give it read-only tokens. Each token travels only in the request header to its own forge and never appears in the log, which records only whether a token is set. Keep `.env` out of git.
 
-forge-scout reads at most 8 MiB of each response body, on every forge and for its own GitHub code-scanning and workflow reads alike. A larger response fails that read, so a hostile or broken server cannot fill its memory.
+forge-scout reads at most 8 MiB of each response body, on every forge and for its own GitHub code-scanning and workflow reads alike. A larger response fails that read, so a hostile or broken server cannot fill its memory. One repository's code-scanning alerts are held to 8 MiB too, across all their pages: past that, the repository's code-scanning read fails.
 
 forge-scout holds back 250 requests of the budget each forge's last response reported. A scan that would go below that stops for that forge, logs `scan stopped` and reads again once the budget renews, so it does not use up a budget your other tools share. GitHub keeps separate budgets for its REST and GraphQL APIs and reports only the one a request drew on. There forge-scout holds the 250 against the REST budget that all of the connection's reads share, and forgeapi holds the GraphQL budget itself. A GitHub answer of 403 with no rate-limit header stops every request of that connection for the rest of the scan, because GitHub sends it for a secondary rate limit too.
 

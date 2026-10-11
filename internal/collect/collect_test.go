@@ -914,6 +914,25 @@ func TestScan_pr_checks_supported_with_no_open_pr_count_zero(t *testing.T) {
 	}
 }
 
+func TestScan_every_pr_checks_refused_to_the_token_counts_zero_failing(t *testing.T) {
+	ep := githubEndpoint("gh")
+	ep.conn.prs = map[string][]forge.PullRequest{"o": {
+		{Repo: "o/r", Number: 1, Author: "x", HeadSHA: "h1", UpdatedAt: now},
+		{Repo: "o/r", Number: 2, Author: "x", HeadSHA: "h2", UpdatedAt: now},
+	}}
+	ep.conn.checks = map[string]forge.CheckResult{"h1": {State: forge.CheckUnreadable}, "h2": {State: forge.CheckUnreadable}}
+	h := newHarness(t, ep)
+	h.scan(t)
+	c := lineFor(t, h.rec, "scan complete", "gh")
+	for k, want := range map[string]string{
+		"pr_checks_read": "complete", "failing_checks_prs": "0", "checks_unread": "0", "checks_unsupported_for_token": "2", "degraded": "false",
+	} {
+		if c[k] != want {
+			t.Errorf("scan complete %s = %q, want %q: checks refused to the token leave the rest of the count whole", k, c[k], want)
+		}
+	}
+}
+
 func TestScan_a_head_with_no_checks_is_a_whole_read(t *testing.T) {
 	ep := githubEndpoint("gh")
 	ep.conn.prs = map[string][]forge.PullRequest{"o": {{Repo: "o/r", Number: 1, Author: "x", HeadSHA: "h1"}}}

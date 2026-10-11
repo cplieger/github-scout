@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -143,10 +144,26 @@ type apiAlert struct {
 }
 
 // maxAlertPages bounds one repository's code-scanning read at 10,000 open
-// alerts, a safety ceiling rather than a working limit: the read returns
-// every row it holds, about 300 bytes each, and each page costs one request
-// of the connection's quota (see ghquota.Meter.Admit).
+// alerts, a safety ceiling rather than a working limit: each page costs one
+// request of the connection's quota (see ghquota.Meter.Admit).
 const maxAlertPages = 100
+
+// maxAlertBytes bounds what one repository's alerts hold, at what one
+// response may already hold: a GitHub alert row is about 250 bytes, so
+// 10,000 fit three times over, while a forge answering long strings on every
+// page fails the read instead of filling memory (see alertBytes).
+const maxAlertBytes = bodyCap
+
+// alertRowBytes is the fixed part of one held alert; its Repo and Source
+// share strings every row holds.
+var alertRowBytes = int(reflect.TypeFor[forge.Alert]().Size())
+
+// alertBytes is what a holds beyond the strings it shares.
+func alertBytes(a *forge.Alert) int {
+	return alertRowBytes + len(a.Rule) + len(a.Severity) + len(a.Tool) + len(a.URL)
+}
+
+var errAlertsTooLarge = fmt.Errorf("alerts hold more than %d bytes", maxAlertBytes)
 
 // route is one listing this package reads and what its answers mean.
 type route struct {
@@ -199,13 +216,28 @@ func list[T any](ctx context.Context, c *Client, rt route, repo string, q url.Va
 }
 
 // CodeScanningAlerts reads repo's open code-scanning alerts: EndNone where
-// the repository has no analyses (see codeScanning).
+// the repository has no analyses (see codeScanning). Alerts past
+// maxAlertBytes fail the read.
 func (c *Client) CodeScanningAlerts(ctx context.Context, repo forge.Repo) (forge.Listing[forge.Alert], error) {
 	owner, name, err := segments(repo.Path)
 	if err != nil {
 		return forge.Listing[forge.Alert]{}, err
 	}
-	return list(ctx, c, codeScanning, repo.Path, url.Values{"state": {"open"}}, "/repos/"+owner+"/"+name+"/code-scanning/alerts", decodeAlerts)
+	left := maxAlertBytes
+	decode := func(repo string, body []byte) ([]forge.Alert, error) {
+		rows, err := decodeAlerts(repo, body)
+		if err != nil {
+			return nil, err
+		}
+		for i := range rows {
+			left -= alertBytes(&rows[i])
+		}
+		if left < 0 {
+			return nil, errAlertsTooLarge
+		}
+		return rows, nil
+	}
+	return list(ctx, c, codeScanning, repo.Path, url.Values{"state": {"open"}}, "/repos/"+owner+"/"+name+"/code-scanning/alerts", decode)
 }
 
 // decodeAlerts maps one code-scanning alerts page of repo. A body that is not

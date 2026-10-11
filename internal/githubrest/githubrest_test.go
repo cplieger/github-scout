@@ -153,6 +153,23 @@ func TestCodeScanningAlerts_a_repository_past_the_page_ceiling_reads_partial(t *
 	}
 }
 
+func TestCodeScanningAlerts_alerts_past_the_byte_budget_fail_the_read(t *testing.T) {
+	var calls atomic.Int32
+	rule := strings.Repeat("r", 20_000)
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		io.WriteString(w, strings.ReplaceAll(alertsPage((page-1)*perPage+1, perPage), `"go/rule"`, `"`+rule+`"`))
+	})
+	got, err := c.CodeScanningAlerts(t.Context(), repo)
+	if err == nil || got.End != 0 || len(got.Rows) != 0 {
+		t.Errorf("CodeScanningAlerts over pages of %d-byte rules = %d alerts ending %v, %v, want a failed read with no rows", len(rule), len(got.Rows), got.End, err)
+	}
+	if want := maxAlertBytes/(perPage*len(rule)) + 1; int(calls.Load()) != want {
+		t.Errorf("CodeScanningAlerts over the byte budget sent %d requests, want %d: the page crossing it ends the read", calls.Load(), want)
+	}
+}
+
 // read is one of the two routes, as its row count, End and error.
 type read func(c *Client, ctx context.Context) (rows int, end forge.End, err error)
 

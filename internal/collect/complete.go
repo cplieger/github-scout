@@ -79,8 +79,9 @@ func workAttrs(sc *scan, r *connResult) []slog.Attr {
 	return append(attrs, checksAttrs(r, failingChecks)...)
 }
 
-// checksAttrs counts the pull requests whose head checks fail, absent where no
-// checks read succeeded or the pull requests were not all read.
+// checksAttrs counts the pull requests whose head checks fail, absent where the
+// pull requests were not all read, or where no checks read succeeded on a
+// pull request whose checks the token may read.
 func checksAttrs(r *connResult, failing int) []slog.Attr {
 	fl := &r.ledger.fam[famChecks]
 	if !fl.begun || fl.unsupported {
@@ -88,7 +89,8 @@ func checksAttrs(r *connResult, failing int) []slog.Attr {
 	}
 	unread := slog.Int("checks_unread", fl.drops[dropFailed]+fl.drops[dropCut]+fl.drops[dropNoHead]+fl.drops[dropRefused])
 	token := slog.Int("checks_unsupported_for_token", fl.drops[dropTokenUnsupported])
-	if r.ledger.state(famPRs) != readComplete || r.ledger.state(famChecks) == readBlind || (len(r.prs) > 0 && fl.read() == 0) {
+	readable := len(r.prs) - fl.drops[dropTokenUnsupported]
+	if r.ledger.state(famPRs) != readComplete || r.ledger.state(famChecks) == readBlind || (readable > 0 && fl.read() == 0) {
 		return []slog.Attr{unread, token}
 	}
 	return []slog.Attr{slog.Int("failing_checks_prs", failing), unread, token}

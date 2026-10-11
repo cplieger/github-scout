@@ -477,6 +477,41 @@ func TestScan_a_pull_request_whose_checks_github_refuses_the_token_keeps_the_lis
 	}
 }
 
+// TestScan_every_pull_request_whose_checks_github_refuses_the_token_counts_zero_failing
+// drives the real adapter against a GitHub fake whose only open pull request
+// sits on a private repository whose check rollup it refuses.
+func TestScan_every_pull_request_whose_checks_github_refuses_the_token_counts_zero_failing(t *testing.T) {
+	rec := capture.Default(t)
+	w := world("acme")
+	w.Repos[0].PRs = []forgeconntest.Item{{Number: 9, Title: "Infra change", Author: "someone", HeadSHA: "def", ChecksForbidden: true}}
+	w.Repos[0].Private = true
+	gh := forgeconntest.New(forgeconntest.GitHub, w)
+	t.Cleanup(gh.Close)
+	cfg := config.Config{Lookback: 72 * time.Hour, Connections: []config.Connection{gh.Connection("hub")}}
+	c := newCollector(t.Context(), &cfg, slog.Default(), testStore(t))
+	t.Cleanup(c.Close)
+	if got := c.Scan(t.Context()); got != collect.Complete {
+		t.Fatalf("scan = %s, want complete; messages %v", got, rec.Messages())
+	}
+	complete := map[string]string{}
+	for _, r := range rec.Records() {
+		if r.Message == "scan complete" {
+			r.Attrs(func(a slog.Attr) bool {
+				complete[a.Key] = a.Value.String()
+				return true
+			})
+		}
+	}
+	for k, want := range map[string]string{
+		"open_prs_read": "complete", "pr_checks_read": "complete", "degraded": "false", "open_prs": "1",
+		"failing_checks_prs": "0", "checks_unread": "0", "checks_unsupported_for_token": "1",
+	} {
+		if complete[k] != want {
+			t.Errorf("scan complete %s = %q, want %q; line %v", k, complete[k], want, complete)
+		}
+	}
+}
+
 // TestScan_a_run_in_a_state_forgeapi_cannot_map_is_counted_and_never_judged
 // drives the real adapter against a GitHub fake whose second run carries a
 // conclusion no table knows: the run is counted, never delivered, and its

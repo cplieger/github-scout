@@ -186,7 +186,7 @@ func (s *Server) serveGitHubGraphQL(w http.ResponseWriter, r *http.Request) (str
 		data["search"], _ = s.githubSearch(req.Variables, false)
 		errs = s.searchErrors()
 	case "CommitRollup":
-		data["repository"], errs = s.githubRollup(req.Variables)
+		data["repository"] = s.githubRollup(req.Variables)
 	default:
 		return line, false
 	}
@@ -299,20 +299,14 @@ func (s *Server) githubSearchNode(repo *Repo, it *Item, pr bool) map[string]any 
 	return node
 }
 
-func (s *Server) githubRollup(vars map[string]any) (repository any, refused []map[string]any) {
+func (s *Server) githubRollup(vars map[string]any) any {
 	name, _ := vars["name"].(string)
 	ref, _ := vars["ref"].(string)
 	repo, ok := s.repo(name)
 	if !ok {
-		return nil, nil
+		return nil
 	}
 	commit := map[string]any{"__typename": "Commit", "oid": ref, "statusCheckRollup": nil}
-	for i := range repo.PRs {
-		if repo.PRs[i].ChecksForbidden && repo.PRs[i].HeadSHA == ref {
-			commit["statusCheckRollup"] = refusedRollup()
-			return map[string]any{"nameWithOwner": s.fullName(repo), "object": commit}, []map[string]any{rollupRefusal("repository", "object")}
-		}
-	}
 	if state, ok := repo.Checks[ref]; ok {
 		upper := map[string]string{"success": "SUCCESS", "failure": "FAILURE", "pending": "PENDING"}[state]
 		commit["statusCheckRollup"] = map[string]any{"state": upper, "contexts": map[string]any{
@@ -322,5 +316,5 @@ func (s *Server) githubRollup(vars map[string]any) (repository any, refused []ma
 			"nodes":    []any{map[string]any{"__typename": "StatusContext", "context": "ci", "description": "", "targetUrl": "", "state": upper}},
 		}}
 	}
-	return map[string]any{"nameWithOwner": s.fullName(repo), "object": commit}, nil
+	return map[string]any{"nameWithOwner": s.fullName(repo), "object": commit}
 }
