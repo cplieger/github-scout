@@ -97,6 +97,10 @@ type Item struct {
 	Labels  []string
 	Number  int
 	Draft   bool
+	// ChecksForbidden has GitHub refuse the pull request's check rollup with
+	// FORBIDDEN beside every other field, as it answers a fine-grained token
+	// on a private repository.
+	ChecksForbidden bool
 }
 
 // Server is one fake instance.

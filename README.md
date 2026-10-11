@@ -61,7 +61,7 @@ services:
       - "./data:/data"
 ```
 
-1. Create a read-only token on each forge, with the [permissions](docs/configuration.md#token-permissions) for that forge. On GitHub, use a classic token with the `repo` scope, which also reads pull request checks. A fine-grained token with read-only Actions, Commit statuses, Pull requests, Issues and Code scanning alerts works too, but GitHub gives it no permission for check runs.
+1. Create a read-only token on each forge, with the [permissions](docs/configuration.md#token-permissions) for that forge. On GitHub, use a classic token with the `repo` scope, which also reads pull request checks. A fine-grained token with read-only Actions, Contents, Commit statuses, Pull requests, Issues and Code scanning alerts works too, but GitHub gives it no permission for check runs, so the checks of pull requests on private repositories are not available with it.
 2. In the folder that holds `compose.yaml`, create a file named `.env` with one line per token, such as `GITHUB_TOKEN=github_pat_your_token`. If your user on the host is not uid 1000, also add `PUID=` and `PGID=` lines with your numbers from `id -u` and `id -g`.
 3. Save [`config.example.yaml`](config.example.yaml) beside `compose.yaml`, then run `mkdir -p config && cp config.example.yaml config/config.yaml`. In `config/config.yaml`, set each connection's `url` and `owners`, and delete the connections you do not use.
 4. Add each token variable the config names to the `environment:` block of `compose.yaml`.
@@ -118,13 +118,13 @@ Pull requests, issues and CI runs are read on every forge. Code-scanning alerts 
 - On Gitea and Forgejo, the run listing has no time filter. forgeapi ends it at the first page whose runs were all created more than a minute before the listing's start, so a long run history costs one or two requests a scan. Gitea releases before 28 send no run creation time, so their runs are not read and the log says so once per scan.
 - Run durations need a start time from the forge. GitHub, Gitea and Forgejo send one. GitLab's pipeline list does not, so GitLab workflows never appear among the slowest workflows.
 - A GitLab owner that is a user and not a group has no owner-wide pull request or issue list. forge-scout then reads each of that user's projects, which costs two requests per project per scan.
-- A pull request's checks are read on GitHub and GitLab, one request per open pull request. Gitea and Forgejo name no head commit in the cross-repository list, so their pull requests show no checks.
+- A pull request's checks are read on GitHub and GitLab, one request per open pull request. GitHub refuses a fine-grained token the checks of a pull request on a private repository, and the dashboard shows them as Not available with this token. Gitea and Forgejo name no head commit in the cross-repository list, so their pull requests show no checks.
 
 ## Security
 
 forge-scout opens no port and runs no web server. It sends only read requests, and only to the forges you configure, so give it read-only tokens. Each token travels only in the request header to its own forge and never appears in the log, which records only whether a token is set. Keep `.env` out of git.
 
-forge-scout reads at most 8 MiB of each response body, on every forge and for its own GitHub code-scanning and workflow reads alike. A larger response fails that read, so a hostile or broken server cannot fill its memory.
+forge-scout reads at most 8 MiB of each response body, on every forge and for its own GitHub code-scanning and workflow reads alike. A larger response fails that read, so a hostile or broken server cannot fill its memory. One repository's code-scanning alerts are held to 8 MiB too, across all their pages: past that, the repository's code-scanning read fails.
 
 forge-scout holds back 250 requests of the budget each forge's last response reported. A scan that would go below that stops for that forge, logs `scan stopped` and reads again once the budget renews, so it does not use up a budget your other tools share. GitHub keeps separate budgets for its REST and GraphQL APIs and reports only the one a request drew on. There forge-scout holds the 250 against the REST budget that all of the connection's reads share, and forgeapi holds the GraphQL budget itself. A GitHub answer of 403 with no rate-limit header stops every request of that connection for the rest of the scan, because GitHub sends it for a secondary rate limit too.
 

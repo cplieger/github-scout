@@ -17,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/cplieger/github-scout/internal/config"
@@ -85,6 +86,8 @@ type Collector struct {
 	lookback  time.Duration
 	interval  time.Duration
 	limit     time.Duration
+	// checksTokenWarned is set once warnChecksToken has logged.
+	checksTokenWarned atomic.Bool
 }
 
 type connState struct {

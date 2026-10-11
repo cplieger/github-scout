@@ -143,7 +143,7 @@
         "spec": {
           "id": 11,
           "title": "PRs with failing checks",
-          "description": "Open pull requests whose head commit's checks failed, summed over each connection's newest scan. The tile turns red at 1, and Gitea and Forgejo pull requests are not counted, because their lists name no head commit. It reads No whole count in the newest scan when a selected connection's newest scan did not read it whole, stopped before counting or had no known forge, so narrow the Forge filter. It reads Not on these forges, or no scan when no selected connection has the signal or none finished a scan in the time range.",
+          "description": "Open pull requests whose head commit's checks failed, summed over each connection's newest scan, and the tile turns red at 1. It leaves out Gitea and Forgejo pull requests, whose lists name no head commit, and GitHub pull requests whose checks GitHub refuses a fine-grained token, which What connections cannot read counts. It reads No whole count in the newest scan when a selected connection's newest scan did not read it whole, stopped before counting or had no known forge, so narrow the Forge filter. It reads Not on these forges, or no scan when no selected connection has the signal or none finished a scan in the time range.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -1468,7 +1468,7 @@
         "spec": {
           "id": 22,
           "title": "Open pull requests, idlest first",
-          "description": "Open pull requests with the oldest last activity first, up to 10 per forge. From says who opened it, and Checks is the verdict of its head commit, absent on Gitea and Forgejo. The Open work tab lists more of them.",
+          "description": "Open pull requests with the oldest last activity first, up to 10 per forge. From says who opened it, and Checks is the verdict of its head commit, absent on Gitea and Forgejo. Checks reads Not available with this token where GitHub refuses the token a pull request's checks. The Open work tab lists more of them.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -1748,6 +1748,10 @@
                         "value": 112
                       },
                       {
+                        "id": "custom.wrapText",
+                        "value": true
+                      },
+                      {
                         "id": "mappings",
                         "value": [
                           {
@@ -1782,6 +1786,11 @@
                                 "index": 5,
                                 "text": "Not read whole",
                                 "color": "yellow"
+                              },
+                              "unreadable": {
+                                "index": 6,
+                                "text": "Not available with this token",
+                                "color": "text"
                               }
                             }
                           }
@@ -5197,7 +5206,7 @@
         "spec": {
           "id": 44,
           "title": "Open pull requests",
-          "description": "Every open pull request, oldest last activity first, up to 25 per forge from the newest scan. Labels are the forge's labels joined by commas. A title ending in draft is one its author marked as not ready.",
+          "description": "Every open pull request, oldest last activity first, up to 25 per forge from the newest scan. Labels are the forge's labels joined by commas. A title ending in draft is one its author marked as not ready. Checks reads Not available with this token where GitHub refuses the token a pull request's checks.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -5523,6 +5532,10 @@
                         "value": 112
                       },
                       {
+                        "id": "custom.wrapText",
+                        "value": true
+                      },
+                      {
                         "id": "mappings",
                         "value": [
                           {
@@ -5557,6 +5570,11 @@
                                 "index": 5,
                                 "text": "Not read whole",
                                 "color": "yellow"
+                              },
+                              "unreadable": {
+                                "index": 6,
+                                "text": "Not available with this token",
+                                "color": "text"
                               }
                             }
                           }
@@ -10216,7 +10234,7 @@
         "spec": {
           "id": 79,
           "title": "What connections cannot read",
-          "description": "One row per connection, from its newest scan in the time range. Not on this forge names the signals the forge does not have. Empty owners names configured owners that resolved but listed no repository, often a typo or a token that cannot see them. The cut columns count repositories whose run, alert or workflow list stopped at a page limit, and Repo list cut reads Yes when the repository list itself was cut short.",
+          "description": "One row per connection, from its newest scan in the time range, where Not on this forge names the signals the forge does not have. Empty owners names configured owners that resolved but listed no repository, often a typo or a token that cannot see them. The cut columns count repositories whose run, alert or workflow list stopped at a page limit, and Repo list cut reads Yes when the repository list itself was cut short. Checks not for this token counts the open pull requests whose checks GitHub refuses a fine-grained token, which a classic token with the repo scope reads.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -10253,7 +10271,7 @@
                         "name": "${datasource}"
                       },
                       "spec": {
-                        "expr": "{container=\"forge-scout\"} |= `scan ` | json msg=\"msg\", forge=\"forge\", connection=\"connection\", scan_id=\"scan_id\", unsupported_signals=\"unsupported_signals\", owners_empty=\"owners_empty\", repos_truncated=\"repos_truncated\", runs_truncated_repos=\"runs_truncated_repos\", security_truncated_repos=\"security_truncated_repos\", workflows_truncated_repos=\"workflows_truncated_repos\" | msg=`scan complete` or msg=`scan stopped` | forge=~\"$forge\" | label_format unsupported_signals=`{{ .unsupported_signals | replace \"_\" \" \" | replace \",\" \", \" }}`, owners_empty=`{{ .owners_empty | replace \",\" \", \" }}`",
+                        "expr": "{container=\"forge-scout\"} |= `scan ` | json msg=\"msg\", forge=\"forge\", connection=\"connection\", scan_id=\"scan_id\", unsupported_signals=\"unsupported_signals\", owners_empty=\"owners_empty\", repos_truncated=\"repos_truncated\", runs_truncated_repos=\"runs_truncated_repos\", security_truncated_repos=\"security_truncated_repos\", workflows_truncated_repos=\"workflows_truncated_repos\", checks_unsupported_for_token=\"checks_unsupported_for_token\" | msg=`scan complete` or msg=`scan stopped` | forge=~\"$forge\" | label_format unsupported_signals=`{{ .unsupported_signals | replace \"_\" \" \" | replace \",\" \", \" }}`, owners_empty=`{{ .owners_empty | replace \",\" \", \" }}`",
                         "queryType": "range",
                         "maxLines": 41
                       }
@@ -10299,7 +10317,8 @@
                           "repos_truncated",
                           "runs_truncated_repos",
                           "security_truncated_repos",
-                          "workflows_truncated_repos"
+                          "workflows_truncated_repos",
+                          "checks_unsupported_for_token"
                         ]
                       }
                     }
@@ -10317,7 +10336,8 @@
                         "repos_truncated": 3,
                         "runs_truncated_repos": 4,
                         "security_truncated_repos": 5,
-                        "workflows_truncated_repos": 6
+                        "workflows_truncated_repos": 6,
+                        "checks_unsupported_for_token": 7
                       }
                     }
                   }
@@ -10506,6 +10526,22 @@
                       {
                         "id": "custom.width",
                         "value": 160
+                      }
+                    ]
+                  },
+                  {
+                    "matcher": {
+                      "id": "byName",
+                      "options": "checks_unsupported_for_token"
+                    },
+                    "properties": [
+                      {
+                        "id": "displayName",
+                        "value": "Checks not for this token"
+                      },
+                      {
+                        "id": "custom.width",
+                        "value": 208
                       }
                     ]
                   },

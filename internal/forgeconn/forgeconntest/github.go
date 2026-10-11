@@ -179,10 +179,11 @@ func (s *Server) serveGitHubGraphQL(w http.ResponseWriter, r *http.Request) (str
 	case "RepoOwned":
 		data["repositoryOwner"] = s.githubOwner(req.Variables)
 	case "PRMine":
-		data["search"] = s.githubSearch(req.Variables, true)
-		errs = s.searchErrors()
+		var refused []map[string]any
+		data["search"], refused = s.githubSearch(req.Variables, true)
+		errs = append(s.searchErrors(), refused...)
 	case "IssueMine":
-		data["search"] = s.githubSearch(req.Variables, false)
+		data["search"], _ = s.githubSearch(req.Variables, false)
 		errs = s.searchErrors()
 	case "CommitRollup":
 		data["repository"] = s.githubRollup(req.Variables)
@@ -224,7 +225,9 @@ func (s *Server) githubOwner(vars map[string]any) any {
 	}}
 }
 
-func (s *Server) githubSearch(vars map[string]any, prs bool) map[string]any {
+// githubSearch answers one search page, with the FORBIDDEN error of each
+// pull request whose check rollup it refuses.
+func (s *Server) githubSearch(vars map[string]any, prs bool) (page map[string]any, refused []map[string]any) {
 	q, _ := vars["q"].(string)
 	var nodes []map[string]any
 	if strings.Contains(strings.ToLower(q), "user:"+strings.ToLower(s.world.Owner)+" ") {
@@ -235,12 +238,34 @@ func (s *Server) githubSearch(vars map[string]any, prs bool) map[string]any {
 				items = repo.PRs
 			}
 			for j := range items {
+				if prs && items[j].ChecksForbidden {
+					refused = append(refused, rollupRefusal("search", "nodes", len(nodes), "commits", "nodes", 0, "commit"))
+				}
 				nodes = append(nodes, s.githubSearchNode(repo, &items[j], prs))
 			}
 		}
 	}
 	return map[string]any{
 		"issueCount": len(nodes), "pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}, "nodes": nodes,
+	}, refused
+}
+
+// refusedRollup is a check rollup whose contexts GitHub refused: the counts
+// answered, the context rows null.
+func refusedRollup() map[string]any {
+	return map[string]any{"state": "SUCCESS", "contexts": map[string]any{
+		"totalCount": 1, "checkRunCount": 1, "statusContextCount": 0,
+		"checkRunCountsByState": []any{map[string]any{"state": "SUCCESS", "count": 1}}, "statusContextCountsByState": []any{},
+		"pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}, "nodes": nil,
+	}}
+}
+
+// rollupRefusal is the error GitHub answers beside refusedRollup, at the
+// rollup under path.
+func rollupRefusal(path ...any) map[string]any {
+	return map[string]any{
+		"type": "FORBIDDEN", "message": "Resource not accessible by personal access token",
+		"path": append(path, "statusCheckRollup", "contexts", "nodes"),
 	}
 }
 
@@ -267,6 +292,9 @@ func (s *Server) githubSearchNode(repo *Repo, it *Item, pr bool) map[string]any 
 		node["mergeStateStatus"] = "CLEAN"
 		node["merged"] = false
 		node["commits"] = map[string]any{"nodes": []any{}}
+		if it.ChecksForbidden {
+			node["commits"] = map[string]any{"nodes": []any{map[string]any{"commit": map[string]any{"oid": it.HeadSHA, "statusCheckRollup": refusedRollup()}}}}
+		}
 	}
 	return node
 }

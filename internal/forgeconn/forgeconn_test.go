@@ -492,6 +492,8 @@ func TestCommitChecks_tells_no_checks_from_an_unread_fold(t *testing.T) {
 		{"unmapped_context", forgeapi.CommitChecks{State: forgeapi.CheckUnknown, Unknown: 1, Total: 1}, forge.CheckResult{State: forge.CheckUnknown, End: forge.EndWhole}},
 		{"cut_before_any_context", forgeapi.CommitChecks{State: forgeapi.CheckUnknown, Partial: cut}, forge.CheckResult{State: forge.CheckUnknown, End: forge.EndCut}},
 		{"passing", forgeapi.CommitChecks{State: forgeapi.CheckPassing, Passing: 2, Total: 2}, forge.CheckResult{State: forge.CheckPassing, End: forge.EndWhole}},
+		{"refused_to_the_token", forgeapi.CommitChecks{State: forgeapi.CheckUnknown, Partial: &forgeapi.Partial{Reason: forgeapi.PartialForbidden}}, forge.CheckResult{State: forge.CheckUnreadable, End: forge.EndWhole}},
+		{"answered_beside_errors", forgeapi.CommitChecks{State: forgeapi.CheckUnknown, Partial: &forgeapi.Partial{Reason: forgeapi.PartialGraphQLPartial}}, forge.CheckResult{State: forge.CheckUnknown, End: forge.EndCut}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeAPI{status: func(string) (forgeapi.CommitChecks, error) { return tc.cc, nil }}
@@ -502,6 +504,38 @@ func TestCommitChecks_tells_no_checks_from_an_unread_fold(t *testing.T) {
 				t.Errorf("CommitChecks(%+v) = %+v, %v, want %+v", tc.cc, got, err, tc.want)
 			}
 		})
+	}
+}
+
+// A row whose checks forgeapi marked refused in the listing is answered
+// unreadable without a checks read, and every other row keeps its read.
+func TestOpenPRs_a_row_whose_checks_the_forge_refused_reads_unreadable_unsent(t *testing.T) {
+	reads := 0
+	f := &fakeAPI{
+		myPRs: func(...forgeapi.ListOption) (forgeapi.Page[forgeapi.PullRequest], error) {
+			p := prPage(1, nil)
+			refused := p.Items[0]
+			refused.Ref.Number, refused.Partial = 2, &forgeapi.Partial{Reason: forgeapi.PartialForbidden}
+			p.Items = append(p.Items, refused)
+			return p, nil
+		},
+		status: func(string) (forgeapi.CommitChecks, error) {
+			reads++
+			return forgeapi.CommitChecks{State: forgeapi.CheckPassing, Passing: 1, Total: 1}, nil
+		},
+	}
+	c := client(t, f)
+	prs, err := c.OpenPRs(t.Context(), "o")
+	if err != nil || len(prs) != 2 || prs[0].ChecksRefused || !prs[1].ChecksRefused {
+		t.Fatalf("OpenPRs = %+v, %v, want two rows, the second's checks refused", prs, err)
+	}
+	for i, want := range []forge.CheckState{forge.CheckPassing, forge.CheckUnreadable} {
+		if got, err := c.CommitChecks(t.Context(), &prs[i]); err != nil || got.State != want || got.End != forge.EndWhole {
+			t.Errorf("CommitChecks(#%d) = %+v, %v, want %s read whole", prs[i].Number, got, err, want)
+		}
+	}
+	if reads != 1 {
+		t.Errorf("checks reads sent = %d, want 1: the refused row needs none", reads)
 	}
 }
 

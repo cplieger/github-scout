@@ -30,10 +30,11 @@ connections:
   - name: github
     url: https://github.com
     # A classic token with the repo scope, which also reads pull request
-    # checks. A fine-grained token with read-only Actions, Commit statuses,
-    # Pull requests, Issues and Code scanning alerts works too, but GitHub
-    # gives it no permission for check runs. docs/configuration.md lists the
-    # permissions for every forge.
+    # checks. A fine-grained token with read-only Actions, Contents, Commit
+    # statuses, Pull requests, Issues and Code scanning alerts works too, but
+    # GitHub gives it no permission for check runs, so the checks of pull
+    # requests on private repositories are not available with it.
+    # docs/configuration.md lists the permissions for every forge.
     token: ${GITHUB_TOKEN}
     # The users, organizations or GitLab groups whose repositories are scanned.
     owners: [your-login]

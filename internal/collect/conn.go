@@ -873,9 +873,22 @@ func (r *connResult) checksFailed(pr *forge.PullRequest, err error) {
 	r.log.Log(context.Background(), level, "pull request checks unreadable", append([]any{"repo", bounded(pr.Repo), "number", pr.Number, "error", errText(err)}, hint...)...)
 }
 
+// hintChecksToken is the remedy for checks the forge refuses the token.
+const hintChecksToken = "GitHub gives a fine-grained token no permission for check runs, so these pull requests' checks are not read. " +
+	"Use a classic token with the repo scope to read them."
+
+// warnChecksToken logs, once per process, that the forge refuses the token
+// pr's checks: the remedy is the token's, so a line per scan adds nothing.
+func (c *Collector) warnChecksToken(r *connResult, pr *forge.PullRequest) {
+	if c.checksTokenWarned.Swap(true) {
+		return
+	}
+	r.log.Warn("pull request checks not available with this token", "repo", bounded(pr.Repo), "number", pr.Number, "hint", hintChecksToken)
+}
+
 // readChecks folds each open pull request's head checks, on a product whose
 // pull-request rows name a head and a pull-request snapshot it publishes.
-func (*Collector) readChecks(ctx context.Context, _ *scan, cs *connState, r *connResult) error {
+func (c *Collector) readChecks(ctx context.Context, _ *scan, cs *connState, r *connResult) error {
 	if r.ledger.fam[famChecks].unsupported || r.ledger.withheld(famPRs) {
 		return nil
 	}
@@ -894,8 +907,13 @@ func (*Collector) readChecks(ctx context.Context, _ *scan, cs *connState, r *con
 			r.checksFailed(&row.pr, err)
 			continue
 		}
-		r.ledger.record(famChecks, res.End, nil)
 		row.check = &res
+		if res.State == forge.CheckUnreadable {
+			r.ledger.drop(famChecks, dropTokenUnsupported, 1)
+			c.warnChecksToken(r, &row.pr)
+			continue
+		}
+		r.ledger.record(famChecks, res.End, nil)
 	}
 	r.ledger.finish(famChecks)
 	return nil

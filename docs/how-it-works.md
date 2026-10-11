@@ -54,8 +54,8 @@ forge-scout reads every forge through [forgeapi](https://github.com/cplieger/for
 - one listing request per page of repositories, per owner,
 - one request per page of open pull requests and of open issues, per owner, or per project for a GitLab user,
 - one run request per page per repository,
-- on GitHub, one code-scanning and one workflows request per repository,
-- one checks request per open pull request on GitHub and GitLab.
+- on GitHub, one code-scanning request per 100 open alerts, at least one, and one workflows request per repository,
+- one checks request per open pull request on GitHub and GitLab, except a pull request whose checks GitHub refused the token in the list.
 
 On Gitea and Forgejo the run listing has no time filter. forgeapi drops each page's runs created before the listing's start, and ends the listing at the first page whose runs were all created more than a minute before it, so a long run history costs one or two requests per repository. GitHub and GitLab filter by creation time on the server. GitHub cuts a list at 1,000 runs, and forge-scout stops one at 40 pages.
 

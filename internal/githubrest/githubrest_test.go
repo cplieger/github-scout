@@ -100,7 +100,7 @@ func TestCodeScanningAlerts_rule_falls_back_to_the_description(t *testing.T) {
 	}
 }
 
-func TestCodeScanningAlerts_pages_until_a_short_page_and_stops_at_the_bound(t *testing.T) {
+func TestCodeScanningAlerts_pages_until_a_short_page(t *testing.T) {
 	var calls atomic.Int32
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -114,14 +114,59 @@ func TestCodeScanningAlerts_pages_until_a_short_page_and_stops_at_the_bound(t *t
 	if err != nil || got.End != forge.EndWhole || len(got.Rows) != 103 || calls.Load() != 2 {
 		t.Errorf("CodeScanningAlerts over a full and a short page = %d alerts ending %v calls %d, %v, want 103, whole, 2", len(got.Rows), got.End, calls.Load(), err)
 	}
-	calls.Store(0)
-	full := newClient(t, func(w http.ResponseWriter, _ *http.Request) {
+}
+
+// alertsServer answers total open alerts a page at a time, each response
+// reporting one request fewer left in the REST pool.
+func alertsServer(total int, calls *atomic.Int32) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		n := int(calls.Add(1))
+		w.Header().Set("X-RateLimit-Remaining", strconv.Itoa(5000-n))
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		from := (page-1)*perPage + 1
+		io.WriteString(w, alertsPage(from, max(0, min(perPage, total-from+1))))
+	}
+}
+
+func TestCodeScanningAlerts_a_repository_past_500_alerts_reads_whole(t *testing.T) {
+	var calls atomic.Int32
+	c := newClient(t, alertsServer(1166, &calls))
+	got, err := c.CodeScanningAlerts(t.Context(), repo)
+	if err != nil || got.End != forge.EndWhole || len(got.Rows) != 1166 {
+		t.Fatalf("CodeScanningAlerts over 1,166 alerts = %d alerts ending %v, %v, want all 1,166 read whole", len(got.Rows), got.End, err)
+	}
+	if calls.Load() != 12 || got.Rows[1165].Number != 1166 {
+		t.Errorf("CodeScanningAlerts over 1,166 alerts = %d requests, last alert %d, want 12 pages ending at alert 1166", calls.Load(), got.Rows[1165].Number)
+	}
+	if b := c.Budget(); b.Remaining != 5000-12 {
+		t.Errorf("the quota meter after 12 pages = %d remaining, want %d: every page is charged", b.Remaining, 5000-12)
+	}
+}
+
+func TestCodeScanningAlerts_a_repository_past_the_page_ceiling_reads_partial(t *testing.T) {
+	var calls atomic.Int32
+	c := newClient(t, alertsServer(maxAlertPages*perPage+1, &calls))
+	got, err := c.CodeScanningAlerts(t.Context(), repo)
+	if err != nil || got.End != forge.EndCut || len(got.Rows) != maxAlertPages*perPage || int(calls.Load()) != maxAlertPages {
+		t.Errorf("CodeScanningAlerts past the ceiling = %d alerts ending %v in %d requests, %v, want %d, cut, %d",
+			len(got.Rows), got.End, calls.Load(), err, maxAlertPages*perPage, maxAlertPages)
+	}
+}
+
+func TestCodeScanningAlerts_alerts_past_the_byte_budget_fail_the_read(t *testing.T) {
+	var calls atomic.Int32
+	rule := strings.Repeat("r", 20_000)
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		io.WriteString(w, alertsPage(1, 100))
+		page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+		io.WriteString(w, strings.ReplaceAll(alertsPage((page-1)*perPage+1, perPage), `"go/rule"`, `"`+rule+`"`))
 	})
-	got, err = full.CodeScanningAlerts(t.Context(), repo)
-	if err != nil || got.End != forge.EndCut || len(got.Rows) != 500 || calls.Load() != 5 {
-		t.Errorf("CodeScanningAlerts over five full pages = %d alerts ending %v calls %d, %v, want 500, cut, 5", len(got.Rows), got.End, calls.Load(), err)
+	got, err := c.CodeScanningAlerts(t.Context(), repo)
+	if err == nil || got.End != 0 || len(got.Rows) != 0 {
+		t.Errorf("CodeScanningAlerts over pages of %d-byte rules = %d alerts ending %v, %v, want a failed read with no rows", len(rule), len(got.Rows), got.End, err)
+	}
+	if want := maxAlertBytes/(perPage*len(rule)) + 1; int(calls.Load()) != want {
+		t.Errorf("CodeScanningAlerts over the byte budget sent %d requests, want %d: the page crossing it ends the read", calls.Load(), want)
 	}
 }
 
