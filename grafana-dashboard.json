@@ -143,7 +143,7 @@
         "spec": {
           "id": 11,
           "title": "PRs with failing checks",
-          "description": "Open pull requests whose head commit's checks failed, summed over each connection's newest scan. The tile turns red at 1, and Gitea and Forgejo pull requests are not counted, because their lists name no head commit. It counts only the pull requests whose checks were read. GitHub gives a fine-grained token no permission for check runs, so the checks of a pull request on a private repository are not available with that token, and the tile leaves it out. What connections cannot read, on the Scout health tab, counts those pull requests, and a classic token with the repo scope reads their checks. It reads No whole count in the newest scan when a selected connection's newest scan did not read it whole, stopped before counting or had no known forge, so narrow the Forge filter. It reads Not on these forges, or no scan when no selected connection has the signal or none finished a scan in the time range.",
+          "description": "Open pull requests whose head commit's checks failed, summed over each connection's newest scan, and the tile turns red at 1. It leaves out Gitea and Forgejo pull requests, whose lists name no head commit, and GitHub pull requests whose checks GitHub refuses a fine-grained token, which What connections cannot read counts. It reads No whole count in the newest scan when a selected connection's newest scan did not read it whole, stopped before counting or had no known forge, so narrow the Forge filter. It reads Not on these forges, or no scan when no selected connection has the signal or none finished a scan in the time range.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
@@ -10234,7 +10234,7 @@
         "spec": {
           "id": 79,
           "title": "What connections cannot read",
-          "description": "One row per connection, from its newest scan in the time range. Not on this forge names the signals the forge does not have. Empty owners names configured owners that resolved but listed no repository, often a typo or a token that cannot see them. The cut columns count repositories whose run, alert or workflow list stopped at a page limit, and Repo list cut reads Yes when the repository list itself was cut short. Checks not for this token counts the open pull requests whose checks GitHub refuses the token, as it refuses check runs to a fine-grained token. A classic token with the repo scope reads them.",
+          "description": "One row per connection, from its newest scan in the time range, where Not on this forge names the signals the forge does not have. Empty owners names configured owners that resolved but listed no repository, often a typo or a token that cannot see them. The cut columns count repositories whose run, alert or workflow list stopped at a page limit, and Repo list cut reads Yes when the repository list itself was cut short. Checks not for this token counts the open pull requests whose checks GitHub refuses a fine-grained token, which a classic token with the repo scope reads.",
           "links": [],
           "data": {
             "kind": "QueryGroup",
